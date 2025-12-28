@@ -1,123 +1,168 @@
-// main.ts - A simple Telegram bot for encrypting proxy subscription URLs into Happ encrypted links (happ://crypt3/...)
-// Using the official free Happ crypto API: https://crypto.happ.su/api.php
-// 
-// Instructions:
-// 1. Create a Telegram bot with @BotFather and get your BOT_TOKEN.
-// 2. Save this file as main.ts
-// 3. Run: deno run --allow-net main.ts
-// 4. (Optional) Set BOT_TOKEN as environment variable for security:
-//    export BOT_TOKEN=your:token_here && deno run --allow-net main.ts
-// 
-// The bot will:
-// - Respond to /start with instructions
-// - Encrypt any message that contains "http://" or "https://" using the official Happ API
-// - Reply with the encrypted Happ link or an error message
+// main.ts
+// 🤖 Happ Encryption Bot (Webhook Version)
+// 🔐 Encrypts proxy URLs/node links into secure Happ format (RSA-4096 crypt3)
+// 📱 Uses official public encryption API: https://crypto.happ.su/api.php
+// 🚀 Webhook-based (efficient, no polling)
+// 👋 Greets users on /start and supports many proxy protocols
 
-const BOT_TOKEN = Deno.env.get("BOT_TOKEN") || "REPLACE_WITH_YOUR_BOT_TOKEN";
-if (BOT_TOKEN.includes("REPLACE")) {
-  console.error("Please set your BOT_TOKEN (environment variable or replace in code).");
-  Deno.exit(1);
-}
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
-const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
-const HAPP_CRYPTO_API = "https://crypto.happ.su/api.php";
+const HAPP_API_URL = "https://crypto.happ.su/api.php";
 
-async function sendMessage(chatId: number, text: string, options: any = {}) {
-  await fetch(`${TELEGRAM_API}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+// -------------------- Telegram Setup --------------------
+const TOKEN = Deno.env.get("BOT_TOKEN");
+if (!TOKEN) throw new Error("BOT_TOKEN not set. Set it as an environment variable.");
+const API = `https://api.telegram.org/bot${TOKEN}`;
+
+// -------------------- Helper Functions --------------------
+async function sendMessage(chatId: string, text: string, parseMode = "HTML") {
+  try {
+    const body: any = {
       chat_id: chatId,
       text,
-      parse_mode: "HTML",
+      parse_mode: parseMode,
       disable_web_page_preview: true,
-      ...options,
-    }),
-  });
-}
-
-async function encryptUrl(url: string): Promise<string> {
-  const response = await fetch(HAPP_CRYPTO_API, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
-  });
-
-  const result = await response.text();
-
-  if (!response.ok) {
-    return `❌ Encryption failed (API error ${response.status}):\n${result.trim() || "No details"}`;
-  }
-
-  const encrypted = result.trim();
-  if (encrypted.startsWith("happ://")) {
-    return `✅ Encrypted Happ link:\n\n<code>${encrypted}</code>`;
-  } else {
-    return `⚠️ API response (possibly an error):\n${encrypted}`;
-  }
-}
-
-async function main() {
-  let offset = 0;
-  console.log("Happ Encryption Bot started...");
-
-  while (true) {
-    try {
-      const res = await fetch(
-        `${TELEGRAM_API}/getUpdates?offset=${offset}&timeout=30&allowed_updates=["message"]`,
-      );
-      const data = await res.json();
-
-      if (!data.ok) {
-        console.error("Telegram API error:", data);
-        await new Promise((r) => setTimeout(r, 5000));
-        continue;
-      }
-
-      for (const update of data.result) {
-        offset = update.update_id + 1;
-
-        const message = update.message;
-        if (!message || !message.text) continue;
-
-        const chatId = message.chat.id;
-        const text = message.text.trim();
-
-        // Send "typing" action
-        await fetch(`${TELEGRAM_API}/sendChatAction`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: chatId, action: "typing" }),
-        });
-
-        if (text === "/start" || text === "/help") {
-          await sendMessage(
-            chatId,
-            "<b>Happ Encryption Bot</b>\n\n" +
-              "Send me any proxy subscription URL (must contain http:// or https://),\n" +
-              "and I will encrypt it using the official Happ API into a secure <code>happ://crypt3/...</code> link.\n\n" +
-              "This hides the server details and works only in the Happ app.",
-          );
-          continue;
-        }
-
-        // Check if it looks like a URL
-        if (text.includes("http://") || text.includes("https://")) {
-          const encrypted = await encryptUrl(text);
-          await sendMessage(chatId, encrypted);
-        } else {
-          await sendMessage(
-            chatId,
-            "Please send a valid subscription URL containing <code>http://</code> or <code>https://</code>.\n" +
-              "Use /start for more info.",
-          );
-        }
-      }
-    } catch (err) {
-      console.error("Error:", err);
-      await new Promise((r) => setTimeout(r, 5000));
+    };
+    
+    const res = await fetch(`${API}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      console.error("Failed to send message:", data);
     }
+  } catch (err) {
+    console.error("Failed to send message:", err);
   }
 }
 
-main();
+async function encryptUrl(url: string): Promise<string | null> {
+  try {
+    const response = await fetch(HAPP_API_URL, {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ url: url.trim() }),
+    });
+
+    if (!response.ok) {
+      console.error("API request failed:", response.status, await response.text());
+      return null;
+    }
+
+    const text = await response.text();
+    let encrypted: string | null = null;
+
+    // Try to parse as JSON first (some responses are {"url": "happ://..."})
+    try {
+      const json = JSON.parse(text);
+      if (typeof json === "object" && json !== null && json.url && typeof json.url === "string") {
+        encrypted = json.url.trim();
+      } else if (json.error) {
+        console.error("API error:", json.error);
+        return null;
+      }
+    } catch {
+      // Not JSON – fall back to plain text response
+    }
+
+    // If not from JSON, use raw text
+    if (!encrypted) {
+      encrypted = text.trim();
+    }
+
+    // Validate it looks like a Happ link
+    if (encrypted.startsWith("happ://")) {
+      return encrypted;
+    }
+
+    console.error("Invalid response (not a Happ link):", encrypted);
+    return null;
+  } catch (err) {
+    console.error("Encryption failed:", err);
+    return null;
+  }
+}
+
+function isProxyLink(text: string): boolean {
+  const trimmed = text.trim();
+  const proxyPrefixes = [
+    "http://", "https://",
+    "vmess://", "vless://", "trojan://", "ss://", "shadowsocks://",
+    "hysteria://", "hysteria2://", "tuic://", "warp://"
+  ];
+  return proxyPrefixes.some(prefix => trimmed.toLowerCase().startsWith(prefix));
+}
+
+// -------------------- Webhook Handler --------------------
+serve(async (req) => {
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+  
+  try {
+    const update = await req.json();
+    
+    const msg = update.message;
+    if (!msg || !msg.text) {
+      return new Response("ok");
+    }
+    
+    const chatId = String(msg.chat.id);
+    const text = msg.text.trim();
+    
+    // Handle /start command
+    if (text === "/start" || text === "/help") {
+      const greeting = `<b>👋 Welcome to Happ Encryption Bot!</b>\n\n` +
+        `This bot encrypts your proxy links using the <b>official Happ RSA-4096 encryption</b> (crypt3).\n\n` +
+        `<b>How to use:</b>\n` +
+        `• Send me a proxy subscription URL or single node link\n` +
+        `  Supported formats:\n` +
+        `  - https://... or http://...\n` +
+        `  - vmess://...\n` +
+        `  - vless://...\n` +
+        `  - trojan://...\n` +
+        `  - ss://... or shadowsocks://...\n` +
+        `  - hysteria://... / hysteria2://...\n` +
+        `  - tuic://... / warp://...\n\n` +
+        `<b>Note:</b> Encrypted links hide server details and work <b>only in the official Happ Proxy Utility app</b>.`;
+
+      await sendMessage(chatId, greeting);
+      return new Response("ok");
+    }
+
+    // Check if it's a proxy link
+    if (isProxyLink(text)) {
+      await sendMessage(chatId, "🔐 Encrypting your link...\nThis may take a few seconds.");
+
+      const encrypted = await encryptUrl(text);
+
+      if (encrypted) {
+        const responseText = `<b>✅ Successfully Encrypted!</b>\n\n` +
+          `<b>Encrypted Happ Link:</b>\n<pre>${encrypted}</pre>\n\n` +
+          `<i>You can now safely share this link. It only works in the official Happ app.</i>`;
+
+        await sendMessage(chatId, responseText);
+      } else {
+        await sendMessage(chatId, `<b>❌ Encryption Failed</b>\n\n` +
+          `The link could not be encrypted. Possible reasons:\n` +
+          `• Invalid or unsupported format\n` +
+          `• API temporary issue\n\n` +
+          `Please check the link and try again.`);
+      }
+    } else {
+      await sendMessage(chatId, `<b>❌ Invalid Input</b>\n\n` +
+        `Please send a valid proxy link (subscription URL or node).\n\n` +
+        `Supported prefixes: https://, vmess://, vless://, trojan://, ss://, etc.\n\n` +
+        `Use /start for full instructions.`);
+    }
+    
+  } catch (err) {
+    console.error("Error handling update:", err);
+  }
+  
+  return new Response("ok");
+});
