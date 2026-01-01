@@ -1,42 +1,29 @@
-// main.ts
-// Telegram Tic-Tac-Toe Bot (Deno)
-// Features: Language selection (EN/RU), trophy matches (/battle), real star matches (/realbattle),
-// profiles with stats (Deno KV), leaderboard with pagination (trophies and stars), admin (/addtouser, /stats, /userprofile),
-// Withdrawal functionality (/withdraw) with admin approval via inline button,
-// Daily login bonus (+1 star if last login >24h),
-// Match = best of 3 rounds,
-// All messages support EN/RU based on user choice
-//
 // Notes: Requires BOT_TOKEN env var and Deno KV. Deploy as webhook at SECRET_PATH.
-// Fixed: Do not update trophies in star matches, added missing translations, made functions async where needed for getText,
-// fixed messages to use getText consistently, translated buttons, fixed potential bugs in messaging.
-
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 const TOKEN = Deno.env.get("BOT_TOKEN")!;
 if (!TOKEN) throw new Error("BOT_TOKEN env var is required");
+
 const API = `https://api.telegram.org/bot${TOKEN}`;
-const SECRET_PATH = Deno.env.get("SECRET_PATH"); // make sure webhook path matches
-const BOT_USERNAME = "HappDecryptionBot"; // Adjust to your bot's username
-
-// Deno KV
-const kv = await Deno.openKv();
-
+const SECRET_PATH = Deno.env.get("SECRET_PATH"); // Adjust this to your deployed webhook path
 const ADMIN_USERNAME = "Masakoff"; // without @
 
-// runtime storages
-let queue: string[] = []; // for trophy matches
-let starQueue: string[] = []; // for real star matches
+// Deno KV instance
+const kv = await Deno.openKv();
+
+// Runtime storage for active matches and queues
+let queue: string[] = [];
+let starQueue: string[] = [];
 const battles: Record<string, any> = {};
 const searchTimeouts: Record<string, number> = {};
 
-// State helpers using KV
-async function getWithdrawalState(userId: string): Promise<{ amount: number; step: "amount" } | null> {
-  const res = await kv.get<{ amount: number; step: "amount" }>(["states", "withdrawal", userId]);
+// State helpers using KV for multi-step processes like withdrawals
+async function getWithdrawalState(userId: string): Promise<{ amount: number; step: "amount" | "phone" } | null> {
+  const res = await kv.get<{ amount: number; step: "amount" | "phone" }>(["states", "withdrawal", userId]);
   return res.value;
 }
 
-async function setWithdrawalState(userId: string, state: { amount: number; step: "amount" } | null) {
+async function setWithdrawalState(userId: string, state: { amount: number; step: "amount" | "phone" } | null) {
   if (state) {
     await kv.set(["states", "withdrawal", userId], state);
   } else {
@@ -44,7 +31,17 @@ async function setWithdrawalState(userId: string, state: { amount: number; step:
   }
 }
 
-// -------------------- Telegram helpers --------------------
+// User language storage
+async function getUserLanguage(userId: string): Promise<string> {
+  const res = await kv.get<string>(["users", userId, "language"]);
+  return res.value ?? "EN"; // Default to English
+}
+
+async function setUserLanguage(userId: string, language: string) {
+  await kv.set(["users", userId, "language"], language);
+}
+
+// -------------------- Telegram API Helpers --------------------
 async function sendMessage(chatId: string | number, text: string, options: any = {}): Promise<number | null> {
   try {
     const body: any = { chat_id: chatId, text, ...options };
@@ -54,6 +51,10 @@ async function sendMessage(chatId: string | number, text: string, options: any =
       body: JSON.stringify(body),
     });
     const data = await res.json();
+    if (!data.ok) {
+      console.error("sendMessage failed:", data.error);
+      return null;
+    }
     return data.result?.message_id ?? null;
   } catch (e) {
     console.error("sendMessage error", e);
@@ -64,11 +65,15 @@ async function sendMessage(chatId: string | number, text: string, options: any =
 async function editMessageText(chatId: string | number, messageId: number, text: string, options: any = {}) {
   try {
     const body = { chat_id: chatId, message_id: messageId, text, ...options };
-    await fetch(`${API}/editMessageText`, {
+    const res = await fetch(`${API}/editMessageText`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    const data = await res.json();
+    if (!data.ok) {
+      console.warn("editMessageText failed:", data.error);
+    }
   } catch (e) {
     console.warn("editMessageText failed", e?.message ?? e);
   }
@@ -86,140 +91,39 @@ async function answerCallbackQuery(id: string, text = "", showAlert = false) {
   }
 }
 
-// -------------------- Language helpers --------------------
-type Lang = 'en' | 'ru';
-
-const texts: Record<Lang, Record<string, string>> = {
-  en: {
-    chooseLang: "Choose language:",
-    welcome: "Welcome to Tic-Tac-Toe Bot!",
-    help: "Play Tic-Tac-Toe, earn trophies and stars.\n\nCommands:\n/battle - Trophy match\n/realbattle - Star match (stake 1 star)\n/profile - Your profile\n/leaderboard_trophies - Top by trophies\n/leaderboard_stars - Top by stars\n/withdraw - Withdraw stars (min 50)\n/admin - Admin panel (if admin)",
-    searching: "Searching for opponent...",
-    searchTimeout: "Search timed out. No opponent found.",
-    alreadyInQueue: "You are already in queue.",
-    alreadyInGame: "You are already in a game.",
-    insufficientStars: "Insufficient stars. Need at least 1 star for real match.",
-    battleStartTrophy: "Trophy Match\nYou are {mark}. Best of 3 rounds vs ID:{opponent}",
-    battleStartStar: "Star Match\nYou are {mark}. Best of 3 rounds vs ID:{opponent}\nStakes: Both stake 1 star. Winner gets 1.5 stars.",
-    headerTrophy: "🏆 Trophy Match — You ({yourMark}) vs {opponentDisplay} ({opponentMark})",
-    headerStar: "⭐ Star Match — You ({yourMark}) vs {opponentDisplay} ({opponentMark})",
-    round: "Round {round}/{rounds}",
-    score: "Score: {score1} - {score2}",
-    yourTurn: "Your turn",
-    opponentTurn: "Opponent's turn",
-    roundResult: "Round {round} Result!",
-    roundWin: "You won the round!",
-    roundLoss: "You lost the round",
-    roundDraw: "Round draw!",
-    winLine: "🎉 Win line: {line}",
-    draw: "🤝 Draw!",
-    matchWinTrophy: "You won the match!\n+1 trophy",
-    matchLossTrophy: "You lost the match.\n-1 trophy",
-    matchWinStar: "You won the match!\n+1.5 stars",
-    starLoss: "-1 star",
-    matchDraw: "Match draw!",
-    starRefund: "Draw: 1 star refunded.",
-    surrender: "You surrendered.",
-    opponentSurrender: "Opponent surrendered. You win!",
-    timeoutTurn: "Timed out. You lose the turn.",
-    opponentTimeoutTurn: "Opponent timed out. You win the turn!",
-    timeoutGame: "Game timed out due to inactivity.",
-    invalidMove: "Invalid move.",
-    cellOccupied: "Cell occupied.",
-    profile: "Profile: {name}\nID: {id}\nTrophies: {trophies}\nStars: {stars}\nGames: {games}\nWins: {wins}\nLosses: {losses}\nDraws: {draws}\nWin Rate: {winrate}%",
-    leaderboard: "Leaderboard - Page {page}\n",
-    noPlayers: "No players yet!",
-    noMorePages: "No more pages!",
-    withdrawAmount: "Enter amount to withdraw (min 50):",
-    invalidAmount: "Invalid amount.",
-    insufficientBalance: "Insufficient balance.",
-    withdrawRequest: "Withdrawal request sent to admin.",
-    withdrawPending: "Withdrawal {amount} stars from ID:{userId}",
-    withdrawComplete: "Withdrawal completed!",
-    withdrawNotify: "Your withdrawal of {amount} stars has been completed.",
-    adminNoAccess: "No access.",
-    adminStats: "Stats\nUsers: {users}\nActive 24h: {active}\nTotal Matches: {matches}\nTotal Stars: {stars}",
-    dailyBonus: "Daily login bonus: +1 star!",
-    surrenderButton: "🏳️ Surrender",
-  },
-  ru: {
-    chooseLang: "Выберите язык:",
-    welcome: "Добро пожаловать в бота Крестики-Нолики!",
-    help: "Играйте в крестики-нолики, зарабатывайте трофеи и звезды.\n\nКоманды:\n/battle - Матч за трофеи\n/realbattle - Матч за звезды (ставка 1 звезда)\n/profile - Ваш профиль\n/leaderboard_trophies - Топ по трофеям\n/leaderboard_stars - Топ по звездам\n/withdraw - Вывод звезд (мин 50)\n/admin - Панель админа (если админ)",
-    searching: "Поиск противника...",
-    searchTimeout: "Поиск завершился. Противник не найден.",
-    alreadyInQueue: "Вы уже в очереди.",
-    alreadyInGame: "Вы уже в игре.",
-    insufficientStars: "Недостаточно звезд. Нужно минимум 1 звезда для реального матча.",
-    battleStartTrophy: "Матч за трофеи\nВы {mark}. Лучший из 3 раундов vs ID:{opponent}",
-    battleStartStar: "Матч за звезды\nВы {mark}. Лучший из 3 раундов vs ID:{opponent}\nСтавки: Оба ставят 1 звезду. Победитель получает 1.5 звезды.",
-    headerTrophy: "🏆 Матч за трофеи — Вы ({yourMark}) vs {opponentDisplay} ({opponentMark})",
-    headerStar: "⭐ Матч за звезды — Вы ({yourMark}) vs {opponentDisplay} ({opponentMark})",
-    round: "Раунд {round}/{rounds}",
-    score: "Счет: {score1} - {score2}",
-    yourTurn: "Ваш ход",
-    opponentTurn: "Ход противника",
-    roundResult: "Результат раунда {round}!",
-    roundWin: "Вы выиграли раунд!",
-    roundLoss: "Вы проиграли раунд",
-    roundDraw: "Ничья в раунде!",
-    winLine: "🎉 Выигрышная линия: {line}",
-    draw: "🤝 Ничья!",
-    matchWinTrophy: "Вы выиграли матч!\n+1 трофей",
-    matchLossTrophy: "Вы проиграли матч.\n-1 трофей",
-    matchWinStar: "Вы выиграли матч!\n+1.5 звезды",
-    starLoss: "-1 звезда",
-    matchDraw: "Ничья в матче!",
-    starRefund: "Ничья: 1 звезда возвращена.",
-    surrender: "Вы сдались.",
-    opponentSurrender: "Противник сдался. Вы выиграли!",
-    timeoutTurn: "Время вышло. Вы проиграли ход.",
-    opponentTimeoutTurn: "Время противника вышло. Вы выиграли ход!",
-    timeoutGame: "Игра завершена из-за неактивности.",
-    invalidMove: "Неверный ход.",
-    cellOccupied: "Клетка занята.",
-    profile: "Профиль: {name}\nID: {id}\nТрофеи: {trophies}\nЗвезды: {stars}\nИгры: {games}\nПобеды: {wins}\nПоражения: {losses}\nНичьи: {draws}\nПроцент побед: {winrate}%",
-    leaderboard: "Лидерборд - Страница {page}\n",
-    noPlayers: "Игроков пока нет!",
-    noMorePages: "Больше страниц нет!",
-    withdrawAmount: "Введите сумму для вывода (мин 50):",
-    invalidAmount: "Неверная сумма.",
-    insufficientBalance: "Недостаточно баланса.",
-    withdrawRequest: "Запрос на вывод отправлен админу.",
-    withdrawPending: "Запрос на вывод {amount} звезд от ID:{userId}",
-    withdrawComplete: "Вывод завершен!",
-    withdrawNotify: "Ваш вывод {amount} звезд завершен.",
-    adminNoAccess: "Нет доступа.",
-    adminStats: "Статистика\nПользователи: {users}\nАктивные 24ч: {active}\nВсего матчей: {matches}\nВсего звезд: {stars}",
-    dailyBonus: "Ежедневный бонус за вход: +1 звезда!",
-    surrenderButton: "🏳️ Сдаться",
-  }
-};
-
-async function getText(userId: string, key: string, params: Record<string, any> = {}): Promise<string> {
-  const profile = await getProfile(userId);
-  const lang = (profile?.lang as Lang) || 'en';
-  let msg = texts[lang][key] || key;
-  for (const [k, v] of Object.entries(params)) {
-    msg = msg.replace(new RegExp(`{${k}}`, 'g'), v.toString());
-  }
-  return msg;
+// -------------------- Language Helper --------------------
+// Returns messages based on the user's selected language
+function getLocalizedMessage(userId: string, enMessage: string, ruMessage: string): string {
+  const lang = getUserLanguage(userId).then(l => l);
+  return lang === "RU" ? ruMessage : enMessage;
 }
+
+// Example localized messages object (can be expanded)
+const messages: Record<string, Record<string, string>> = {
+  welcome: {
+    EN: "🌟 Welcome! Choose your language:",
+    RU: "🌟 Добро пожаловать! Выберите язык:",
+  },
+  lang_selected: {
+    EN: "Language set to English!",
+    RU: "Язык установлен на русский!",
+  },
+  // Add more messages here...
+};
 
 // -------------------- Profile helpers --------------------
 type Profile = {
   id: string;
   username?: string;
   displayName: string;
-  lang?: Lang;
   trophies: number;
-  stars: number;
+  stars: number; // Star balance
   gamesPlayed: number;
   wins: number;
   losses: number;
   draws: number;
   lastActive: number;
-  lastLogin: number;
+  lastLoginBonus: number; // Timestamp of last bonus claim
 };
 
 function getDisplayName(p: Profile) {
@@ -230,7 +134,6 @@ function getDisplayName(p: Profile) {
 async function initProfile(userId: string, username?: string, displayName?: string): Promise<{ profile: Profile; isNew: boolean }> {
   const key = ["profiles", userId];
   const res = await kv.get(key);
-  const now = Date.now();
   if (!res.value) {
     const profile: Profile = {
       id: userId,
@@ -242,8 +145,8 @@ async function initProfile(userId: string, username?: string, displayName?: stri
       wins: 0,
       losses: 0,
       draws: 0,
-      lastActive: now,
-      lastLogin: now,
+      lastActive: Date.now(),
+      lastLoginBonus: 0, // No bonus claimed yet
     };
     await kv.set(key, profile);
     return { profile, isNew: true };
@@ -258,17 +161,10 @@ async function initProfile(userId: string, username?: string, displayName?: stri
       existing.displayName = displayName;
       changed = true;
     }
-    existing.lastActive = now;
-
-    // Daily bonus
-    if (!existing.lastLogin || now - existing.lastLogin > 24 * 60 * 60 * 1000) {
-      existing.stars += 1;
-      existing.lastLogin = now;
-      changed = true;
-      await sendMessage(userId, await getText(userId, 'dailyBonus'));
+    existing.lastActive = Date.now();
+    if (changed) {
+      await kv.set(key, existing);
     }
-
-    if (changed) await kv.set(key, existing);
     return { profile: existing, isNew: false };
   }
 }
@@ -284,7 +180,6 @@ async function updateProfile(userId: string, delta: Partial<Profile>) {
     ...existing,
     username: delta.username ?? existing.username,
     displayName: delta.displayName ?? existing.displayName,
-    lang: delta.lang ?? existing.lang,
     trophies: Math.max(0, (existing.trophies || 0) + (delta.trophies ?? 0)),
     stars: Math.max(0, (existing.stars || 0) + (delta.stars ?? 0)),
     gamesPlayed: (existing.gamesPlayed || 0) + (delta.gamesPlayed ?? 0),
@@ -292,7 +187,7 @@ async function updateProfile(userId: string, delta: Partial<Profile>) {
     losses: (existing.losses || 0) + (delta.losses ?? 0),
     draws: (existing.draws || 0) + (delta.draws ?? 0),
     lastActive: Date.now(),
-    lastLogin: delta.lastLogin ?? existing.lastLogin,
+    lastLoginBonus: delta.lastLoginBonus ?? existing.lastLoginBonus,
     id: existing.id,
   };
   await kv.set(["profiles", userId], newProfile);
@@ -302,22 +197,20 @@ async function updateProfile(userId: string, delta: Partial<Profile>) {
 async function sendProfile(chatId: string) {
   const p = (await getProfile(chatId))!;
   const winRate = p.gamesPlayed ? ((p.wins / p.gamesPlayed) * 100).toFixed(1) : "0";
-  const msg = await getText(chatId, 'profile', {
-    name: getDisplayName(p),
-    id: p.id,
-    trophies: p.trophies,
-    stars: p.stars,
-    games: p.gamesPlayed,
-    wins: p.wins,
-    losses: p.losses,
-    draws: p.draws,
-    winrate: winRate,
-  });
-  await sendMessage(chatId, msg);
+  const lang = await getUserLanguage(chatId);
+  const msg = `🏅 *Profile: ${getDisplayName(p)}*
+🆔 ID: \`${p.id}\`
+🏆 Trophies: *${p.trophies}*
+⭐ Stars: *${p.stars}*
+🎲 Games Played: *${p.gamesPlayed}*
+✅ Wins: *${p.wins}* | ❌ Losses: *${p.losses}* | 🤝 Draws: *${p.draws}*
+📈 Win Rate: *${winRate}%*`;
+
+  await sendMessage(chatId, msg, { parse_mode: "Markdown" });
 }
 
 // -------------------- Leaderboard helpers --------------------
-async function getLeaderboard(type: 'trophies' | 'stars', top = 10, offset = 0): Promise<{top: Profile[], total: number}> {
+async function getLeaderboard(top = 10, offset = 0): Promise<{ top: Profile[], total: number }> {
   const players: Profile[] = [];
   try {
     for await (const entry of kv.list({ prefix: ["profiles"] })) {
@@ -328,38 +221,36 @@ async function getLeaderboard(type: 'trophies' | 'stars', top = 10, offset = 0):
     console.error("getLeaderboard kv.list error", e);
   }
   players.sort((a, b) => {
-    const valA = type === 'trophies' ? a.trophies : a.stars;
-    const valB = type === 'trophies' ? b.trophies : b.stars;
-    if (valB !== valA) return valB - valA;
+    if (b.trophies !== a.trophies) return b.trophies - a.trophies;
     return b.wins - a.wins;
   });
-  return {top: players.slice(offset, offset + top), total: players.length};
+
+  return { top: players.slice(offset, offset + top), total: players.length };
 }
 
-async function sendLeaderboard(chatId: string, type: 'trophies' | 'stars', page = 0) {
+async function sendLeaderboard(chatId: string, page = 0) {
   const perPage = 10;
   const offset = page * perPage;
-  const {top: topPlayers, total} = await getLeaderboard(type, perPage, offset);
-
+  const { top: topPlayers, total } = await getLeaderboard(perPage, offset);
   if (topPlayers.length === 0) {
-    const msg = page === 0 ? await getText(chatId, 'noPlayers') : await getText(chatId, 'noMorePages');
+    const msg = page === 0 ? "No players yet! Start playing to get on the leaderboard!" : "No more pages!";
     await sendMessage(chatId, msg);
     return;
   }
-
-  let msg = await getText(chatId, 'leaderboard', {page: page + 1});
+  let msg = `🏆 *Leaderboard* — Page ${page + 1}
+`;
   topPlayers.forEach((p, i) => {
     const rankNum = offset + i + 1;
     const name = getDisplayName(p);
-    const val = type === 'trophies' ? p.trophies : p.stars;
     const winRate = p.gamesPlayed ? ((p.wins / p.gamesPlayed) * 100).toFixed(1) : "0";
-    msg += `*${rankNum}.* [${name}](tg://user?id=${p.id}) — ${val} | ${winRate}%\n`;
+    msg += `*${rankNum}.* [${name}](tg://user?id=${p.id}) — 🏆 *${p.trophies}* | 📈 *${winRate}%*
+`;
   });
 
   const keyboard: any = { inline_keyboard: [] };
   const row: any[] = [];
-  if (page > 0) row.push({ text: "⬅️", callback_data: `leaderboard_${type}:${page - 1}` });
-  if (offset + topPlayers.length < total) row.push({ text: "➡️", callback_data: `leaderboard_${type}:${page + 1}` });
+  if (page > 0) row.push({ text: "⬅️ Previous", callback_data: `leaderboard:${page - 1}` });
+  if (offset + topPlayers.length < total) row.push({ text: "Next ➡️", callback_data: `leaderboard:${page + 1}` });
   if (row.length) keyboard.inline_keyboard.push(row);
 
   await sendMessage(chatId, msg, { reply_markup: keyboard, parse_mode: "Markdown" });
@@ -372,9 +263,11 @@ function createEmptyBoard(): string[] {
 
 function boardToText(board: string[]) {
   const map: any = { "": "▫️", X: "❌", O: "⭕" };
-  let text = "\n";
+  let text = "
+";
   for (let i = 0; i < 9; i += 3) {
-    text += `${map[board[i]]}${map[board[i + 1]]}${map[board[i + 2]]}\n`;
+    text += `${map[board[i]]}${map[board[i + 1]]}${map[board[i + 2]]}
+`;
   }
   return text;
 }
@@ -394,7 +287,7 @@ function checkWin(board: string[]) {
   return null;
 }
 
-async function makeInlineKeyboard(board: string[], disabled = false, userId: string) {
+function makeInlineKeyboard(board: string[], disabled = false) {
   const keyboard: any[] = [];
   for (let r = 0; r < 3; r++) {
     const row: any[] = [];
@@ -407,7 +300,7 @@ async function makeInlineKeyboard(board: string[], disabled = false, userId: str
     }
     keyboard.push(row);
   }
-  keyboard.push([{ text: await getText(userId, 'surrenderButton'), callback_data: "surrender" }]);
+  keyboard.push([{ text: "🏳️ Surrender", callback_data: "surrender" }]);
   return { inline_keyboard: keyboard };
 }
 
@@ -425,7 +318,7 @@ async function startBattle(p1: string, p2: string, isStarBattle: boolean = false
   const battle = {
     players: [p1, p2],
     board: createEmptyBoard(),
-    turn: p1,
+    turn: p1, // Player 1 starts
     marks: { [p1]: "X", [p2]: "O" },
     messageIds: {} as Record<string, number>,
     idleTimerId: undefined as number | undefined,
@@ -435,62 +328,40 @@ async function startBattle(p1: string, p2: string, isStarBattle: boolean = false
     isStarBattle: isStarBattle,
     rounds,
   };
+
   battles[p1] = battle;
   battles[p2] = battle;
 
   await initProfile(p1);
   await initProfile(p2);
 
-  const battleTypeKey = isStarBattle ? 'battleStartStar' : 'battleStartTrophy';
-  await sendMessage(p1, await getText(p1, battleTypeKey, {mark: 'X', opponent: p2}));
-  await sendMessage(p2, await getText(p2, battleTypeKey, {mark: 'O', opponent: p1}));
+  const battleTypeText = isStarBattle ? "⭐ *Star Match*" : "🏆 *Trophy Match*";
+  const stakeText = isStarBattle ? "
+Stakes: Both players stake 1 star. Winner gets +0.5 stars." : "";
+
+  await sendMessage(p1, `${battleTypeText}
+You are ❌ (X).${stakeText}
+*Match Format:* Best of ${rounds} rounds vs ID:${p2}`, { parse_mode: "Markdown" });
+  await sendMessage(p2, `${battleTypeText}
+You are ⭕ (O).${stakeText}
+*Match Format:* Best of ${rounds} rounds vs ID:${p1}`, { parse_mode: "Markdown" });
+
   await sendRoundStart(battle);
 }
 
-async function headerForPlayer(battle: any, player: string) {
+function headerForPlayer(battle: any, player: string) {
   const opponent = battle.players.find((p: string) => p !== player)!;
   const yourMark = battle.marks[player];
   const opponentMark = battle.marks[opponent];
-  const opponentDisplay = `ID:${opponent}`;
-  const headerKey = battle.isStarBattle ? 'headerStar' : 'headerTrophy';
-  return await getText(player, headerKey, {yourMark, opponentDisplay, opponentMark});
-}
-
-async function sendRoundStart(battle: any) {
-  for (const player of battle.players) {
-    const header = await headerForPlayer(battle, player);
-    const yourTurn = battle.turn === player;
-    const turnText = yourTurn ? await getText(player, 'yourTurn') : await getText(player, 'opponentTurn');
-    const roundText = await getText(player, 'round', {round: battle.round, rounds: battle.rounds});
-    const scoreText = await getText(player, 'score', {score1: battle.roundWins[battle.players[0]], score2: battle.roundWins[battle.players[1]]});
-    const text =
-      `${header}\n\n` +
-      `${roundText}\n` +
-      `${scoreText}\n` +
-      `${turnText}\n` +
-      boardToText(battle.board);
-    const msgId = await sendMessage(player, text, { reply_markup: await makeInlineKeyboard(battle.board, false, player) });
-    if (msgId) battle.messageIds[player] = msgId;
-  }
-
-  if (battle.idleTimerId) {
-    clearTimeout(battle.idleTimerId);
-  }
-  battle.idleTimerId = setTimeout(() => endBattleIdle(battle), 3 * 60 * 1000);
-
-  if (battle.moveTimerId) {
-    clearTimeout(battle.moveTimerId);
-  }
-  battle.moveTimerId = setTimeout(() => endTurnIdle(battle), 30 * 1000);
+  const battleTypeText = battle.isStarBattle ? "⭐ *Star Match*" : "🏆 *Trophy Match*";
+  return `${battleTypeText} — You (${yourMark}) vs ID:${opponent} (${opponentMark})`;
 }
 
 async function endTurnIdle(battle: any) {
   const loser = battle.turn;
   const winner = battle.players.find((p: string) => p !== loser)!;
-
-  await sendMessage(loser, await getText(loser, 'timeoutTurn'));
-  await sendMessage(winner, await getText(winner, 'opponentTimeoutTurn'));
-
+  await sendMessage(loser, "⚠️ You ran out of time. You surrendered.");
+  await sendMessage(winner, "⚠️ Opponent ran out of time. You won!");
   if (battle.idleTimerId) {
     clearTimeout(battle.idleTimerId);
     delete battle.idleTimerId;
@@ -499,97 +370,141 @@ async function endTurnIdle(battle: any) {
     clearTimeout(battle.moveTimerId);
     delete battle.moveTimerId;
   }
-
   await finishMatch(battle, { winner: winner, loser: loser });
+}
+
+async function sendRoundStart(battle: any) {
+  for (const player of battle.players) {
+    const header = headerForPlayer(battle, player);
+    const yourTurn = battle.turn === player;
+    const text =
+      `${header}
+` +
+      `*Round ${battle.round}/${battle.rounds}*
+` +
+      `📊 Score: ${battle.roundWins[battle.players[0]]} - ${battle.roundWins[battle.players[1]]}
+` +
+      `🎲 Turn: ${yourTurn ? "*Your turn*" : "Opponent's turn"}
+` +
+      boardToText(battle.board);
+    const msgId = await sendMessage(player, text, { reply_markup: makeInlineKeyboard(battle.board), parse_mode: "Markdown" });
+    if (msgId) battle.messageIds[player] = msgId;
+  }
+
+  // Set idle timer for the entire match
+  if (battle.idleTimerId) {
+    clearTimeout(battle.idleTimerId);
+  }
+  battle.idleTimerId = setTimeout(() => endBattleIdle(battle), 3 * 60 * 1000); // 3 minutes idle
+
+  // Set move timer for the current player
+  if (battle.moveTimerId) {
+    clearTimeout(battle.moveTimerId);
+  }
+  battle.moveTimerId = setTimeout(() => endTurnIdle(battle), 30 * 1000); // 30 seconds per move
 }
 
 async function endBattleIdle(battle: any) {
   const [p1, p2] = battle.players;
-  await sendMessage(p1, await getText(p1, 'timeoutGame'));
-  await sendMessage(p2, await getText(p2, 'timeoutGame'));
+  await sendMessage(p1, "⚠️ Match ended due to inactivity (3 minutes).");
+  await sendMessage(p2, "⚠️ Match ended due to inactivity (3 minutes).");
 
+  // Refund stars if it was a star match
   if (battle.isStarBattle) {
     await updateProfile(p1, { stars: 1 });
     await updateProfile(p2, { stars: 1 });
-    await sendMessage(p1, await getText(p1, 'starRefund'));
-    await sendMessage(p2, await getText(p2, 'starRefund'));
+    await sendMessage(p1, "💸 Inactivity refund: 1 star returned.");
+    await sendMessage(p2, "💸 Inactivity refund: 1 star returned.");
   }
 
+  // Clean up battle state
   delete battles[p1];
   delete battles[p2];
 }
 
 async function finishMatch(battle: any, result: { winner?: string; loser?: string; draw?: boolean }) {
-  // Increment total matches in KV
-  const totalMatchesKey = ["stats", "totalMatches"];
-  const totalRes = await kv.get<number>(totalMatchesKey);
-  await kv.set(totalMatchesKey, (totalRes.value || 0) + 1);
+  try {
+    // Clear timers
+    if (battle.idleTimerId) {
+      clearTimeout(battle.idleTimerId);
+      delete battle.idleTimerId;
+    }
+    if (battle.moveTimerId) {
+      clearTimeout(battle.moveTimerId);
+      delete battle.moveTimerId;
+    }
 
-  if (battle.idleTimerId) {
-    clearTimeout(battle.idleTimerId);
-    delete battle.idleTimerId;
-  }
-  if (battle.moveTimerId) {
-    clearTimeout(battle.moveTimerId);
-    delete battle.moveTimerId;
-  }
-  const [p1, p2] = battle.players;
+    const [p1, p2] = battle.players;
 
-  for (const player of battle.players) {
-    const msgId = battle.messageIds[player];
-    const header = await headerForPlayer(battle, player);
-    let text: string;
+    // Update message for both players
+    for (const player of battle.players) {
+      const msgId = battle.messageIds[player];
+      const header = headerForPlayer(battle, player);
+      let text: string;
+      if (result.draw) {
+        text = `${header}
+*Match Result:* 🤝 *Draw!*
+${boardToText(battle.board)}`;
+      } else if (result.winner === player) {
+        text = `${header}
+*Match Result:* 🎉 *You won!*
+${boardToText(battle.board)}`;
+      } else {
+        text = `${header}
+*Match Result:* 😢 *You lost.*
+${boardToText(battle.board)}`;
+      }
+      if (msgId) {
+        await editMessageText(player, msgId, text, { reply_markup: makeInlineKeyboard(battle.board, true), parse_mode: "Markdown" });
+      } else {
+        await sendMessage(player, text, { parse_mode: "Markdown" });
+      }
+    }
+
     if (result.draw) {
-      text = `${header}\n\n` + await getText(player, 'matchDraw') + `\n${boardToText(battle.board)}`;
-    } else if (result.winner === player) {
-      text = `${header}\n\n` + (battle.isStarBattle ? await getText(player, 'matchWinStar') : await getText(player, 'matchWinTrophy')) + `\n${boardToText(battle.board)}`;
-    } else {
-      text = `${header}\n\n` + (battle.isStarBattle ? await getText(player, 'starLoss') : await getText(player, 'matchLossTrophy')) + `\n${boardToText(battle.board)}`;
+      // Update stats for draw
+      await updateProfile(p1, { gamesPlayed: 1, draws: 1 });
+      await updateProfile(p2, { gamesPlayed: 1, draws: 1 });
+      await sendMessage(p1, "🤝 The match was a draw!");
+      await sendMessage(p2, "🤝 The match was a draw!");
+
+      // Refund stars on draw if it was a star match
+      if (battle.isStarBattle) {
+        await updateProfile(p1, { stars: 1 });
+        await updateProfile(p2, { stars: 1 });
+        await sendMessage(p1, "💸 Draw refund: 1 star returned.");
+        await sendMessage(p2, "💸 Draw refund: 1 star returned.");
+      }
+    } else if (result.winner) {
+      const winner = result.winner!;
+      const loser = result.loser!;
+      await initProfile(winner);
+      await initProfile(loser);
+
+      // Update stats based on match type
+      if (battle.isStarBattle) {
+        await updateProfile(winner, { gamesPlayed: 1, wins: 1, stars: 1.5 }); // 1.5 = 1 stake back + 0.5 win bonus
+        await updateProfile(loser, { gamesPlayed: 1, losses: 1, stars: -1 }); // -1 for losing stake
+        await sendMessage(winner, `🎉 You won the match!
+⭐ *+0.5 stars!*`);
+        await sendMessage(loser, `😢 You lost the match.
+⭐ *-1 star.*`);
+      } else { // Trophy match
+        await updateProfile(winner, { gamesPlayed: 1, wins: 1, trophies: 1 });
+        await updateProfile(loser, { gamesPlayed: 1, losses: 1, trophies: -1 });
+        await sendMessage(winner, `🎉 You won the match!
+🏆 *+1 trophy!*`);
+        await sendMessage(loser, `😢 You lost the match.
+🏆 *-1 trophy.*`);
+      }
     }
-    if (msgId) {
-      await editMessageText(player, msgId, text, { reply_markup: await makeInlineKeyboard(battle.board, true, player) });
-    } else {
-      await sendMessage(player, text);
-    }
+
+    // Clean up battle state
+    delete battles[p1];
+    delete battles[p2];
+  } catch (err) {
+    console.error("finishMatch error:", err);
   }
-
-  if (result.draw) {
-    await updateProfile(p1, { gamesPlayed: 1, draws: 1 });
-    await updateProfile(p2, { gamesPlayed: 1, draws: 1 });
-    await sendMessage(p1, await getText(p1, 'matchDraw'));
-    await sendMessage(p2, await getText(p2, 'matchDraw'));
-
-    if (battle.isStarBattle) {
-      await updateProfile(p1, { stars: 1 });
-      await updateProfile(p2, { stars: 1 });
-      await sendMessage(p1, await getText(p1, 'starRefund'));
-      await sendMessage(p2, await getText(p2, 'starRefund'));
-    }
-  } else if (result.winner) {
-    const winner = result.winner!;
-    const loser = result.loser!;
-    await initProfile(winner);
-    await initProfile(loser);
-
-    await updateProfile(winner, { gamesPlayed: 1, wins: 1 });
-    await updateProfile(loser, { gamesPlayed: 1, losses: 1 });
-
-    if (!battle.isStarBattle) {
-      await updateProfile(winner, { trophies: 1 });
-      await updateProfile(loser, { trophies: -1 });
-      await sendMessage(winner, await getText(winner, 'matchWinTrophy'));
-      await sendMessage(loser, await getText(loser, 'matchLossTrophy'));
-    }
-
-    if (battle.isStarBattle) {
-      await updateProfile(winner, { stars: 1.5 });
-      await sendMessage(winner, await getText(winner, 'matchWinStar'));
-      await sendMessage(loser, await getText(loser, 'starLoss'));
-    }
-  }
-
-  delete battles[p1];
-  delete battles[p2];
 }
 
 // -------------------- Callback handler --------------------
@@ -597,208 +512,217 @@ async function handleCallback(cb: any) {
   const fromId = String(cb.from.id);
   const data = cb.data ?? null;
   const callbackId = cb.id;
-  const username = cb.from.username;
-  const displayName = cb.from.first_name || cb.from.username || fromId;
 
   if (!data) {
     await answerCallbackQuery(callbackId);
     return;
   }
 
-  if (data.startsWith("lang:")) {
-    const lang = data.split(":")[1] as Lang;
-    await updateProfile(fromId, { lang });
-    await sendMessage(fromId, await getText(fromId, 'welcome'));
-    await showHelpAndMenu(fromId);
-    await answerCallbackQuery(callbackId);
-    return;
-  }
-
-  if (data.startsWith("menu:")) {
-    const cmd = data.split(":")[1];
-    await handleCommand(fromId, username, displayName, `/${cmd}`, false);
-    await answerCallbackQuery(callbackId);
-    return;
-  }
-
-  if (data.startsWith("leaderboard_trophies:")) {
-    const page = parseInt(data.split(":")[2]) || 0;
-    await sendLeaderboard(fromId, 'trophies', page);
-    await answerCallbackQuery(callbackId);
-    return;
-  }
-
-  if (data.startsWith("leaderboard_stars:")) {
-    const page = parseInt(data.split(":")[2]) || 0;
-    await sendLeaderboard(fromId, 'stars', page);
-    await answerCallbackQuery(callbackId);
-    return;
-  }
-
-  if (data.startsWith("complete_withdraw:")) {
-    const withdrawId = data.split(":")[1];
-    const adminProfile = await getProfileByUsername(ADMIN_USERNAME);
-    if (fromId !== adminProfile?.id) {
-      await answerCallbackQuery(callbackId, await getText(fromId, 'adminNoAccess'), true);
-      return;
+  // Handle language selection callback
+  if (data.startsWith("set_lang:")) {
+    const lang = data.split(":")[1];
+    if (lang === "EN" || lang === "RU") {
+      await setUserLanguage(fromId, lang);
+      const msg = lang === "EN" ? "Language set to English!" : "Язык установлен на русский!";
+      await sendMessage(fromId, msg);
+      await showMainMenu(fromId); // Show main menu after language selection
     }
-    const withdrawRes = await kv.get<{userId: string, amount: number}>(["withdrawals", withdrawId]);
-    if (!withdrawRes.value) {
-      await answerCallbackQuery(callbackId, "Request not found.", true);
-      return;
-    }
-    const {userId, amount} = withdrawRes.value;
-    const profile = await getProfile(userId);
-    if (!profile || profile.stars < amount) {
-      await answerCallbackQuery(callbackId, "User has insufficient balance.", true);
-      return;
-    }
-    await updateProfile(userId, {stars: -amount});
-    await sendMessage(userId, await getText(userId, 'withdrawNotify', {amount}));
-    await kv.delete(["withdrawals", withdrawId]);
-    await answerCallbackQuery(callbackId, await getText(fromId, 'withdrawComplete'));
+    await answerCallbackQuery(callbackId);
     return;
   }
 
+  // Handle leaderboard pagination
+  if (data.startsWith("leaderboard:")) {
+    const page = parseInt(data.split(":")[1]) || 0;
+    await sendLeaderboard(fromId, page);
+    await answerCallbackQuery(callbackId);
+    return;
+  }
+
+  // Handle no-op clicks (disabled buttons)
   if (data === "noop") {
     await answerCallbackQuery(callbackId);
     return;
   }
 
+  // Check if user is in a battle
   const battle = battles[fromId];
   if (!battle) {
+    if (data === "surrender") {
+      await answerCallbackQuery(callbackId, "You are not in a game.", true);
+    }
     await answerCallbackQuery(callbackId);
     return;
   }
 
-  // Reset timers
-  if (battle.idleTimerId) {
-    clearTimeout(battle.idleTimerId);
-    battle.idleTimerId = setTimeout(() => endBattleIdle(battle), 3 * 60 * 1000);
-  }
-
+  // Reset move timer as user made a move
   if (battle.moveTimerId) {
     clearTimeout(battle.moveTimerId);
     battle.moveTimerId = setTimeout(() => endTurnIdle(battle), 30 * 1000);
   }
 
+  // Handle surrender
   if (data === "surrender") {
     const opponent = battle.players.find((p: string) => p !== fromId)!;
-    await sendMessage(fromId, await getText(fromId, 'surrender'));
-    await sendMessage(opponent, await getText(opponent, 'opponentSurrender'));
+    await sendMessage(fromId, "🏳️ You surrendered.");
+    await sendMessage(opponent, "🏳️ Opponent surrendered. You won!");
     await finishMatch(battle, { winner: opponent, loser: fromId });
-    await answerCallbackQuery(callbackId, await getText(fromId, 'surrender'));
+    await answerCallbackQuery(callbackId, "You surrendered.");
     return;
   }
 
-  if (!data.startsWith("move:")) {
-    await answerCallbackQuery(callbackId);
-    return;
-  }
-
-  const idx = parseInt(data.split(":")[1]);
-  if (isNaN(idx) || idx < 0 || idx > 8) {
-    await answerCallbackQuery(callbackId, await getText(fromId, 'invalidMove'), true);
-    return;
-  }
-  if (battle.turn !== fromId) {
-    await answerCallbackQuery(callbackId, await getText(fromId, 'opponentTurn'), true);
-    return;
-  }
-  if (battle.board[idx] !== "") {
-    await answerCallbackQuery(callbackId, await getText(fromId, 'cellOccupied'), true);
-    return;
-  }
-
-  const mark = battle.marks[fromId];
-  battle.board[idx] = mark;
-
-  const winResult = checkWin(battle.board);
-  let roundWinner: string | undefined;
-  if (winResult) {
-    const { winner, line } = winResult as any;
-    if (winner !== "draw") {
-      roundWinner = battle.players.find((p: string) => battle.marks[p] === winner)!;
-      battle.roundWins[roundWinner] += 1;
-    }
-
-    for (const player of battle.players) {
-      let boardText = boardToText(battle.board);
-      if (line) {
-        boardText += `\n` + await getText(player, 'winLine', {line: line.map((i: number) => i + 1).join("-")});
-      } else if (winner === "draw") {
-        boardText += `\n` + await getText(player, 'draw');
-      }
-
-      const msgId = battle.messageIds[player];
-      const header = await headerForPlayer(battle, player);
-      const roundResultText = await getText(player, 'roundResult', {round: battle.round});
-      let resultText = winner === "draw" ? await getText(player, 'roundDraw') : (roundWinner === player ? await getText(player, 'roundWin') : await getText(player, 'roundLoss'));
-      const scoreText = await getText(player, 'score', {score1: battle.roundWins[battle.players[0]], score2: battle.roundWins[battle.players[1]]});
-      let text = `${header}\n\n${roundResultText}\n${resultText}\n${scoreText}\n${boardText}`;
-      if (msgId) await editMessageText(player, msgId, text, { reply_markup: await makeInlineKeyboard(battle.board, true, player) });
-      else await sendMessage(player, text);
-    }
-
-    // Check if match over
-    const neededWins = Math.ceil(battle.rounds / 2);
-    if (battle.roundWins[battle.players[0]] >= neededWins || battle.roundWins[battle.players[1]] >= neededWins || battle.round === battle.rounds) {
-      if (battle.roundWins[battle.players[0]] > battle.roundWins[battle.players[1]]) {
-        await finishMatch(battle, { winner: battle.players[0], loser: battle.players[1] });
-      } else if (battle.roundWins[battle.players[1]] > battle.roundWins[battle.players[0]]) {
-        await finishMatch(battle, { winner: battle.players[1], loser: battle.players[0] });
-      } else {
-        await finishMatch(battle, { draw: true });
-      }
-      await answerCallbackQuery(callbackId);
+  // Handle move
+  if (data.startsWith("move:")) {
+    const idx = parseInt(data.split(":")[1]);
+    if (isNaN(idx) || idx < 0 || idx > 8) {
+      await answerCallbackQuery(callbackId, "Invalid move.", true);
       return;
     }
 
-    // Next round
-    battle.round++;
-    battle.board = createEmptyBoard();
-    battle.turn = battle.players[(battle.round - 1) % 2];
+    if (battle.turn !== fromId) {
+      await answerCallbackQuery(callbackId, "Not your turn.", true);
+      return;
+    }
 
-    if (battle.moveTimerId) clearTimeout(battle.moveTimerId);
-    battle.moveTimerId = setTimeout(() => endTurnIdle(battle), 30 * 1000);
+    if (battle.board[idx] !== "") {
+      await answerCallbackQuery(callbackId, "Cell already occupied.", true);
+      return;
+    }
 
-    await sendRoundStart(battle);
-    await answerCallbackQuery(callbackId);
+    const mark = battle.marks[fromId];
+    battle.board[idx] = mark;
+
+    const winResult = checkWin(battle.board);
+    let roundWinner: string | undefined;
+    if (winResult) {
+      const { winner, line } = winResult as any;
+      if (winner !== "draw") {
+        roundWinner = battle.players.find((p: string) => battle.marks[p] === winner)!;
+        battle.roundWins[roundWinner] = (battle.roundWins[roundWinner] || 0) + 1;
+      }
+
+      let boardText = boardToText(battle.board);
+      if (line) {
+        boardText += `
+🎉 *Line:* ${line.map((i: number) => i + 1).join("-")}`;
+      } else if (winner === "draw") {
+        boardText += `
+🤝 *Draw!*`;
+      }
+
+      // Send round result to both players
+      for (const player of battle.players) {
+        const msgId = battle.messageIds[player];
+        const header = headerForPlayer(battle, player);
+        let text = `${header}
+*Round ${battle.round} Result!*
+`;
+        if (winner === "draw") text += `🤝 Round was a draw!
+`;
+        else text += `${roundWinner === player ? "🎉 You won the round!" : "😢 You lost the round"}
+`;
+        text += `📊 Score: ${battle.roundWins[battle.players[0]]} - ${battle.roundWins[battle.players[1]]}
+${boardText}`;
+        if (msgId) await editMessageText(player, msgId, text, { reply_markup: makeInlineKeyboard(battle.board, true), parse_mode: "Markdown" });
+        else await sendMessage(player, text, { parse_mode: "Markdown" });
+      }
+
+      // Check if match is over (best of 3)
+      const neededWins = Math.ceil(battle.rounds / 2);
+      if (battle.roundWins[battle.players[0]] >= neededWins || battle.roundWins[battle.players[1]] >= neededWins || battle.round === battle.rounds) {
+        if (battle.roundWins[battle.players[0]] > battle.roundWins[battle.players[1]]) {
+          await finishMatch(battle, { winner: battle.players[0], loser: battle.players[1] });
+        } else if (battle.roundWins[battle.players[1]] > battle.roundWins[battle.players[0]]) {
+          await finishMatch(battle, { winner: battle.players[1], loser: battle.players[0] });
+        } else {
+          await finishMatch(battle, { draw: true }); // If rounds finish and scores are tied
+        }
+        await answerCallbackQuery(callbackId);
+        return;
+      }
+
+      // Prepare for next round
+      battle.round++;
+      battle.board = createEmptyBoard();
+      battle.turn = battle.players[(battle.round - 1) % 2]; // Alternate turns
+      if (battle.moveTimerId) clearTimeout(battle.moveTimerId);
+      battle.moveTimerId = setTimeout(() => endTurnIdle(battle), 30 * 1000);
+      await sendRoundStart(battle);
+      await answerCallbackQuery(callbackId, "Move made!");
+      return;
+    }
+
+    // Continue the game, switch turns
+    battle.turn = battle.players.find((p: string) => p !== fromId)!;
+    for (const player of battle.players) {
+      const header = headerForPlayer(battle, player);
+      const yourTurn = battle.turn === player;
+      const text =
+        `${header}
+` +
+        `*Round: ${battle.round}/${battle.rounds}*
+` +
+        `📊 Score: ${battle.roundWins[battle.players[0]]} - ${battle.roundWins[battle.players[1]]}
+` +
+        `🎲 Turn: ${yourTurn ? "*Your turn*" : "Opponent's turn"}
+` +
+        boardToText(battle.board);
+      const msgId = battle.messageIds[player];
+      if (msgId) await editMessageText(player, msgId, text, { reply_markup: makeInlineKeyboard(battle.board), parse_mode: "Markdown" });
+      else await sendMessage(player, text, { reply_markup: makeInlineKeyboard(battle.board), parse_mode: "Markdown" });
+    }
+    await answerCallbackQuery(callbackId, "Move made!");
     return;
   }
 
-  // Continue
-  battle.turn = battle.players.find((p: string) => p !== fromId)!;
-  for (const player of battle.players) {
-    const header = await headerForPlayer(battle, player);
-    const yourTurn = battle.turn === player;
-    const turnText = yourTurn ? await getText(player, 'yourTurn') : await getText(player, 'opponentTurn');
-    const roundText = await getText(player, 'round', {round: battle.round, rounds: battle.rounds});
-    const scoreText = await getText(player, 'score', {score1: battle.roundWins[battle.players[0]], score2: battle.roundWins[battle.players[1]]});
-    const text =
-      `${header}\n\n` +
-      `${roundText}\n` +
-      `${scoreText}\n` +
-      `${turnText}\n` +
-      boardToText(battle.board);
-    const msgId = battle.messageIds[player];
-    if (msgId) await editMessageText(player, msgId, text, { reply_markup: await makeInlineKeyboard(battle.board, false, player) });
-    else await sendMessage(player, text, { reply_markup: await makeInlineKeyboard(battle.board, false, player) });
-  }
+  // Default callback answer if no other condition matches
   await answerCallbackQuery(callbackId);
 }
 
-// -------------------- Show help and menu --------------------
-async function showHelpAndMenu(fromId: string) {
-  const helpText = await getText(fromId, 'help');
+// -------------------- Daily Login Bonus --------------------
+async function claimDailyBonus(userId: string): Promise<boolean> {
+  const profile = await getProfile(userId);
+  if (!profile) return false;
+
+  const now = Date.now();
+  const lastBonus = profile.lastLoginBonus;
+  const oneDayMs = 24 * 60 * 60 * 1000;
+
+  if (now - lastBonus >= oneDayMs) {
+    await updateProfile(userId, { stars: 0.1, lastLoginBonus: now }); // Give 0.1 star daily
+    return true;
+  }
+  return false;
+}
+
+// -------------------- Show main menu --------------------
+async function showMainMenu(fromId: string) {
+  const userCount = await getUserCount();
+  const lang = await getUserLanguage(fromId);
+  const helpText = lang === "RU" ?
+    `🌟 Привет! Добро пожаловать в TkmXO BOT!
+🎮 Играйте в крестики-нолики, соревнуйтесь и зарабатывайте. ⚔️
+🎁 За победу в трофейном матче вы получаете +1 трофей, за поражение -1 трофей.
+⭐ За победу в звездном матче вы получаете +0.5 звезд (возвращается 1 заложенная звезда + 0.5 бонус).
+👥 Пригласите друзей и зарабатывайте звезды!
+👥 Всего пользователей: ${userCount}
+🚀 Выберите команду:` :
+    `🌟 Welcome! Welcome to TkmXO BOT!
+🎮 Play Tic-Tac-Toe, battle, and earn. ⚔️
+🎁 Win a trophy match to get +1 trophy, lose to get -1 trophy.
+⭐ Win a star match to get +0.5 stars (1 staked star back + 0.5 bonus).
+👥 Invite friends and earn stars!
+👥 Total users: ${userCount}
+🚀 Choose a command:`;
+
   const mainMenu = {
     inline_keyboard: [
-      [{ text: "🏆 Trophy Battle", callback_data: "menu:battle" }, { text: "⭐ Star Battle", callback_data: "menu:realbattle" }],
-      [{ text: "📊 Profile", callback_data: "menu:profile" }, { text: "🏅 Trophies Leaderboard", callback_data: "menu:leaderboard_trophies" }],
-      [{ text: "⭐ Stars Leaderboard", callback_data: "menu:leaderboard_stars" }, { text: "💸 Withdraw", callback_data: "menu:withdraw" }],
+      [{ text: "🏆 Trophy Match", callback_data: "menu:battle" }, { text: "⭐ Star Match", callback_data: "menu:realbattle" }],
+      [{ text: "📊 Profile", callback_data: "menu:profile" }, { text: "🏆 Leaderboard", callback_data: "menu:leaderboard" }],
+      [{ text: "💸 Withdraw Stars", callback_data: "menu:withdraw" }, { text: "🎁 Daily Bonus", callback_data: "menu:daily" }],
     ]
   };
-  await sendMessage(fromId, helpText, { reply_markup: mainMenu });
+  await sendMessage(fromId, helpText, { parse_mode: "Markdown", reply_markup: mainMenu });
 }
 
 // -------------------- Withdrawal functionality --------------------
@@ -807,39 +731,71 @@ async function handleWithdrawal(fromId: string, text: string) {
   if (state) {
     if (state.step === "amount") {
       const amount = parseFloat(text);
-
-      if (isNaN(amount) || amount < 50) {
-        await sendMessage(fromId, await getText(fromId, 'invalidAmount'));
+      if (isNaN(amount) || amount <= 0) {
+        await sendMessage(fromId, "❌ Amount must be a positive number.");
         return;
       }
-
+      if (amount < 50) {
+        await sendMessage(fromId, "❌ Minimum withdrawal is 50 stars.");
+        return;
+      }
       const profile = await getProfile(fromId);
       if (!profile || profile.stars < amount) {
-        await sendMessage(fromId, await getText(fromId, 'insufficientBalance'));
+        await sendMessage(fromId, `❌ Insufficient stars. Balance: ${profile?.stars ?? 0} stars.`);
         await setWithdrawalState(fromId, null);
         return;
       }
-
-      // Create pending without deduct
-      const withdrawId = crypto.randomUUID();
-      await kv.set(["withdrawals", withdrawId], {userId: fromId, amount});
-
-      await sendMessage(fromId, await getText(fromId, 'withdrawRequest'));
-
-      const adminProfile = await getProfileByUsername(ADMIN_USERNAME);
-      const adminId = adminProfile?.id;
-      if (adminId) {
-        const adminMsg = await getText(adminId, 'withdrawPending', {amount, userId: fromId});
-        await sendMessage(adminId, adminMsg, {
-          reply_markup: { inline_keyboard: [[{ text: "Complete", callback_data: `complete_withdraw:${withdrawId}` }]] }
-        });
+      await setWithdrawalState(fromId, { amount, step: "phone" });
+      await sendMessage(fromId, "📱 Enter your phone number:");
+      return;
+    } else if (state.step === "phone") {
+      const phoneNumber = text.trim();
+      if (phoneNumber.length < 5) { // Basic check
+        await sendMessage(fromId, "❌ Enter a valid phone number.");
+        return;
       }
-
-      await setWithdrawalState(fromId, null);
+      const amount = state.amount;
+      const profile = await getProfile(fromId);
+      if (!profile || profile.stars < amount) {
+        await sendMessage(fromId, "❌ Insufficient balance. Please try again.");
+        await setWithdrawalState(fromId, null);
+        return;
+      }
+      try {
+        await updateProfile(fromId, { stars: -amount });
+        await sendMessage(
+          fromId,
+          `✅ Withdrawal request submitted! Amount: ${amount} stars
+Phone: ${phoneNumber}
+Processing...`,
+        );
+        // Find admin profile to send request
+        const adminProfile = await getProfileByUsername(ADMIN_USERNAME);
+        const adminId = adminProfile?.id || `@${ADMIN_USERNAME}`; // Fallback to username if ID not found
+        const userDisplayName = getDisplayName(profile);
+        const adminMessage = `💰 *WITHDRAWAL REQUEST*
+User: ${userDisplayName} (ID: ${fromId})
+Amount: ${amount} stars
+Phone: ${phoneNumber}
+Action required: Use inline button to complete.`;
+        await sendMessage(adminId, adminMessage, {
+          parse_mode: "Markdown",
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "✅ Complete", callback_data: `complete_withdrawal:${fromId}:${amount}` }]
+            ]
+          }
+        });
+        await setWithdrawalState(fromId, null);
+      } catch (error) {
+        console.error("Withdrawal error:", error);
+        await sendMessage(fromId, "❌ An error occurred. Please try again.");
+        await setWithdrawalState(fromId, null);
+      }
       return;
     }
   } else {
-    await sendMessage(fromId, await getText(fromId, 'withdrawAmount'));
+    await sendMessage(fromId, "💰 Enter the amount of stars to withdraw:");
     await setWithdrawalState(fromId, { amount: 0, step: "amount" });
     return;
   }
@@ -858,71 +814,203 @@ async function getProfileByUsername(username: string): Promise<Profile | null> {
   return null;
 }
 
-// -------------------- Stats for admin --------------------
+// -------------------- Admin Panel --------------------
 async function sendStats(chatId: string) {
   let userCount = 0;
-  let activeCount = 0;
-  let totalMatches = (await kv.get<number>(["stats", "totalMatches"]))?.value || 0;
+  let totalGamesPlayed = 0;
+  let totalTrophies = 0;
   let totalStars = 0;
-  const now = Date.now();
-  const last24h = now - 24 * 60 * 60 * 1000;
+  let totalStarsWithdrawn = 0; // Assuming this is tracked separately if needed
 
   for await (const entry of kv.list({ prefix: ["profiles"] })) {
     if (!entry.value) continue;
     const p = entry.value as Profile;
     userCount++;
+    totalGamesPlayed += p.gamesPlayed || 0;
+    totalTrophies += p.trophies || 0;
     totalStars += p.stars || 0;
-    if (p.lastActive > last24h) activeCount++;
   }
 
-  const msg = await getText(chatId, 'adminStats', {
-    users: userCount,
-    active: activeCount,
-    matches: totalMatches,
-    stars: totalStars,
-  });
-  await sendMessage(chatId, msg);
+  const msg =
+    `📊 *Bot Statistics*
+` +
+    `👥 Total Users: *${userCount}*
+` +
+    `🎲 Total Games Played: *${totalGamesPlayed}*
+` +
+    `🏆 Total Trophies: *${totalTrophies}*
+` +
+    `⭐ Total Stars in Circulation: *${totalStars}*
+` +
+    `⭐ Total Stars Withdrawn: *${totalStarsWithdrawn}*`; // Placeholder, implement if tracking separately
+
+  await sendMessage(chatId, msg, { parse_mode: "Markdown" });
 }
 
-// -------------------- Commands --------------------
-async function handleCommand(fromId: string, username: string | undefined, displayName: string, text: string, isNew: boolean) {
-  const { profile } = await initProfile(fromId, username, displayName);
-  if (!profile.lang) {
-    await sendMessage(fromId, await getText(fromId, 'chooseLang'), {
-      reply_markup: { inline_keyboard: [[{ text: "EN", callback_data: "lang:en" }, { text: "RU", callback_data: "lang:ru" }]] }
-    });
+async function handleAdminCommand(fromId: string, text: string) {
+  const parts = text.trim().split(/\s+/);
+  const cmd = parts[0];
+
+  if (cmd === "/admin" || cmd === "/adminpanel") {
+    await sendMessage(fromId, `Admin Panel:
+/stats - View bot stats
+/profile <userId> - View user profile
+/addstars <userId> <amount> - Add stars to user
+/subtractstars <userId> <amount> - Remove stars from user
+/addtrophies <userId> <amount> - Add trophies to user
+/subtracttrophies <userId> <amount> - Remove trophies from user
+`);
     return;
   }
 
-  // Close active states
+  if (cmd === "/stats") {
+    await sendStats(fromId);
+    return;
+  }
+
+  if (cmd === "/profile") {
+    if (parts.length < 2) {
+      await sendMessage(fromId, "Usage: /profile <userId>");
+      return;
+    }
+    const userId = parts[1];
+    await sendUserProfile(fromId, userId);
+    return;
+  }
+
+  if (cmd === "/addstars" || cmd === "/subtractstars") {
+    if (parts.length < 3) {
+      await sendMessage(fromId, `Usage: ${cmd} <userId> <amount>`);
+      return;
+    }
+    const userId = parts[1];
+    const amount = parseFloat(parts[2]);
+    if (isNaN(amount)) {
+      await sendMessage(fromId, "Invalid amount.");
+      return;
+    }
+    const updateAmount = cmd === "/addstars" ? amount : -amount;
+    await updateProfile(userId, { stars: updateAmount });
+    await sendMessage(fromId, `Updated ${updateAmount} stars for ID:${userId}`);
+    return;
+  }
+
+  if (cmd === "/addtrophies" || cmd === "/subtracttrophies") {
+    if (parts.length < 3) {
+      await sendMessage(fromId, `Usage: ${cmd} <userId> <amount>`);
+      return;
+    }
+    const userId = parts[1];
+    const amount = parseFloat(parts[2]);
+    if (isNaN(amount)) {
+      await sendMessage(fromId, "Invalid amount.");
+      return;
+    }
+    const updateAmount = cmd === "/addtrophies" ? amount : -amount;
+    await updateProfile(userId, { trophies: updateAmount });
+    await sendMessage(fromId, `Updated ${updateAmount} trophies for ID:${userId}`);
+    return;
+  }
+
+  await sendMessage(fromId, "Unknown admin command. Use /admin for help.");
+}
+
+// Admin panel helper to send user profile to admin
+async function sendUserProfile(adminChatId: string, userId: string) {
+  const p = await getProfile(userId);
+  if (!p) {
+    await sendMessage(adminChatId, `❌ User ID:${userId} not found.`);
+    return;
+  }
+  const winRate = p.gamesPlayed ? ((p.wins / p.gamesPlayed) * 100).toFixed(1) : "0";
+  const msg =
+    `🏅 *Profile: ${getDisplayName(p)}*
+` +
+    `🆔 ID: \`${p.id}\`
+` +
+    `🏆 Trophies: *${p.trophies}*
+` +
+    `⭐ Stars: *${p.stars}*
+` +
+    `🎲 Games Played: *${p.gamesPlayed}*
+` +
+    `✅ Wins: *${p.wins}* | ❌ Losses: *${p.losses}* | 🤝 Draws: *${p.draws}*
+` +
+    `📈 Win Rate: *${winRate}%*`;
+
+  await sendMessage(adminChatId, msg, { parse_mode: "Markdown" });
+}
+
+// Admin panel helper to complete withdrawal
+async function completeWithdrawal(adminId: string, userId: string, amount: number) {
+  await sendMessage(userId, `✅ Your withdrawal of ${amount} stars has been processed and completed.`);
+  await sendMessage(adminId, `✅ Withdrawal for ID:${userId} completed.`);
+  // No need to update stars here as they were already deducted
+}
+
+// -------------------- User count helper --------------------
+async function getUserCount(): Promise<number> {
+  let count = 0;
+  try {
+    for await (const entry of kv.list({ prefix: ["profiles"] })) {
+      if (!entry.value) continue;
+      count++;
+    }
+  } catch (e) {
+    console.error("getUserCount error", e);
+  }
+  return count;
+}
+
+// -------------------- Commands --------------------
+async function handleCommand(fromId: string, username: string | undefined, displayName: string, text: string) {
+  // Close any active states before handling new command
   if (await getWithdrawalState(fromId)) {
+    await sendMessage(fromId, "Withdrawal process cancelled.");
     await setWithdrawalState(fromId, null);
+  }
+
+  if (text.startsWith("/start")) {
+    // Check if user already has a language set
+    const userLang = await getUserLanguage(fromId);
+    if (userLang === "EN" || userLang === "RU") {
+      // If language is already set, show main menu
+      await showMainMenu(fromId);
+    } else {
+      // If not, prompt for language selection
+      const langKeyboard = {
+        inline_keyboard: [
+          [{ text: "English (EN)", callback_data: "set_lang:EN" }],
+          [{ text: "Русский (RU)", callback_data: "set_lang:RU" }]
+        ]
+      };
+      await sendMessage(fromId, "🌟 Welcome! Choose your language:", { reply_markup: langKeyboard });
+    }
+    return;
   }
 
   if (text.startsWith("/battle")) {
     if (queue.includes(fromId) || starQueue.includes(fromId)) {
-      await sendMessage(fromId, await getText(fromId, 'alreadyInQueue'));
+      await sendMessage(fromId, "You are already in a queue.");
       return;
     }
     if (battles[fromId]) {
-      await sendMessage(fromId, await getText(fromId, 'alreadyInGame'));
+      await sendMessage(fromId, "You are already in a game.");
       return;
     }
     queue.push(fromId);
-    await sendMessage(fromId, await getText(fromId, 'searching'));
-
+    await sendMessage(fromId, "🔍 Searching for an opponent...");
     searchTimeouts[fromId] = setTimeout(async () => {
       const index = queue.indexOf(fromId);
       if (index !== -1) {
         queue.splice(index, 1);
         delete searchTimeouts[fromId];
-        await sendMessage(fromId, await getText(fromId, 'searchTimeout'));
+        await sendMessage(fromId, "⏱️ Search timed out. No opponent found.");
       }
     }, 30_000) as unknown as number;
-
     if (queue.length >= 2) {
       const [p1, p2] = queue.splice(0, 2);
-      await startBattle(p1, p2);
+      await startBattle(p1, p2, false); // false for trophy match
     }
     return;
   }
@@ -930,36 +1018,32 @@ async function handleCommand(fromId: string, username: string | undefined, displ
   if (text.startsWith("/realbattle")) {
     const profile = await getProfile(fromId);
     if (!profile || profile.stars < 1) {
-      await sendMessage(fromId, await getText(fromId, 'insufficientStars'));
+      await sendMessage(fromId, "❌ You need at least 1 star to play a star match.");
       return;
     }
-
     if (queue.includes(fromId) || starQueue.includes(fromId)) {
-      await sendMessage(fromId, await getText(fromId, 'alreadyInQueue'));
+      await sendMessage(fromId, "You are already in a queue.");
       return;
     }
     if (battles[fromId]) {
-      await sendMessage(fromId, await getText(fromId, 'alreadyInGame'));
+      await sendMessage(fromId, "You are already in a game.");
       return;
     }
-
-    await updateProfile(fromId, { stars: -1 });
+    await updateProfile(fromId, { stars: -1 }); // Deduct stake
     starQueue.push(fromId);
-    await sendMessage(fromId, await getText(fromId, 'searching'));
-
+    await sendMessage(fromId, "🔍 Searching for an opponent... (1 star staked)");
     searchTimeouts[fromId] = setTimeout(async () => {
       const index = starQueue.indexOf(fromId);
       if (index !== -1) {
         starQueue.splice(index, 1);
-        await updateProfile(fromId, { stars: 1 });
-        await sendMessage(fromId, await getText(fromId, 'searchTimeout'));
+        await updateProfile(fromId, { stars: 1 }); // Refund if not found
+        await sendMessage(fromId, "⏱️ Search timed out. 1 star refunded.");
         delete searchTimeouts[fromId];
       }
     }, 30_000) as unknown as number;
-
     if (starQueue.length >= 2) {
       const [p1, p2] = starQueue.splice(0, 2);
-      await startBattle(p1, p2, true);
+      await startBattle(p1, p2, true); // true for star match
     }
     return;
   }
@@ -969,84 +1053,50 @@ async function handleCommand(fromId: string, username: string | undefined, displ
     return;
   }
 
-  if (text.startsWith("/userprofile")) {
-    if (username !== ADMIN_USERNAME) {
-      await sendMessage(fromId, await getText(fromId, 'adminNoAccess'));
-      return;
-    }
-    const parts = text.trim().split(/\s+/);
-    if (parts.length < 2) {
-      await sendMessage(fromId, "/userprofile <userId>");
-      return;
-    }
-    const [, userId] = parts;
-    await sendUserProfile(fromId, userId);
-    return;
-  }
-
-  if (text.startsWith("/leaderboard_trophies")) {
-    await sendLeaderboard(fromId, 'trophies', 0);
-    return;
-  }
-
-  if (text.startsWith("/leaderboard_stars")) {
-    await sendLeaderboard(fromId, 'stars', 0);
-    return;
-  }
-
-  if (text.startsWith("/addtouser")) {
-    if (username !== ADMIN_USERNAME) {
-      await sendMessage(fromId, await getText(fromId, 'adminNoAccess'));
-      return;
-    }
-    const parts = text.trim().split(/\s+/);
-    if (parts.length < 4) {
-      await sendMessage(fromId, "/addtouser stars|trophies <userId> <amount>");
-      return;
-    }
-    const [, type, userId, amountStr] = parts;
-    const amount = parseFloat(amountStr);
-    if (isNaN(amount)) {
-      await sendMessage(fromId, "Invalid amount.");
-      return;
-    }
-    if (type === "stars") {
-      await updateProfile(userId, { stars: amount });
-      await sendMessage(fromId, `${amount} stars added to ID:${userId}`);
-    } else if (type === "trophies") {
-      await updateProfile(userId, { trophies: amount });
-      await sendMessage(fromId, `${amount} trophies added to ID:${userId}`);
-    } else {
-      await sendMessage(fromId, "Invalid type: stars or trophies.");
-    }
+  if (text.startsWith("/leaderboard")) {
+    await sendLeaderboard(fromId, 0);
     return;
   }
 
   if (text.startsWith("/withdraw")) {
     const profile = await getProfile(fromId);
-    if (!profile || profile.stars < 50) {
-      await sendMessage(fromId, await getText(fromId, 'insufficientBalance'));
+    if (!profile) {
+      await sendMessage(fromId, "❌ Profile not found. Play a game first!");
+      return;
+    }
+    if (profile.stars < 50) {
+      await sendMessage(fromId, "❌ Minimum withdrawal is 50 stars.");
       return;
     }
     await handleWithdrawal(fromId, "");
     return;
   }
 
-  if (text.startsWith("/stats")) {
+  if (text.startsWith("/daily")) {
+    const success = await claimDailyBonus(fromId);
+    if (success) {
+      await sendMessage(fromId, "🎁 Daily bonus claimed! +0.1 stars added to your balance.");
+    } else {
+      await sendMessage(fromId, "⏰ You have already claimed your daily bonus today. Try again tomorrow.");
+    }
+    return;
+  }
+
+  if (text.startsWith("/admin") || text.startsWith("/adminpanel")) {
     if (username !== ADMIN_USERNAME) {
-      await sendMessage(fromId, await getText(fromId, 'adminNoAccess'));
+      await sendMessage(fromId, "❌ Unauthorized.");
       return;
     }
-    await sendStats(fromId);
+    await handleAdminCommand(fromId, text);
     return;
   }
 
-  if (text.startsWith("/start") || text.startsWith("/help")) {
-    await showHelpAndMenu(fromId);
+  if (text.startsWith("/help")) {
+    await showMainMenu(fromId);
     return;
   }
 
-  await sendMessage(fromId, "Unknown command. /help");
+  await sendMessage(fromId, "❓ Unknown command. Use /help for options.");
 }
 
 // -------------------- Server / Webhook --------------------
@@ -1058,53 +1108,56 @@ serve(async (req: Request) => {
 
     const update = await req.json();
 
-    // handle normal messages
+    // Handle normal messages
     if (update.message) {
       const msg = update.message;
-      if (msg.chat.type !== "private") return new Response("OK");
+      if (msg.chat.type !== "private") return new Response("OK"); // Ignore group chats
       const from = msg.from;
       const text = (msg.text || "").trim();
       const fromId = String(from.id);
       const username = from.username;
       const displayName = from.first_name || from.username || fromId;
 
+      const { profile, isNew } = await initProfile(fromId, username, displayName);
+
       if (text.startsWith("/")) {
-        await handleCommand(fromId, username, displayName, text, false);
+        await handleCommand(fromId, username, displayName, text);
       } else if (await getWithdrawalState(fromId)) {
         await handleWithdrawal(fromId, text);
       } else {
-        await sendMessage(fromId, "Unknown command. /help");
+        await sendMessage(fromId, "❓ Unknown command. Use /help for options.");
       }
     }
-    // handle callback queries
+
+    // Handle callback queries (inline buttons)
     else if (update.callback_query) {
-      await handleCallback(update.callback_query);
+      const cb = update.callback_query;
+      const fromId = String(cb.from.id);
+      const username = cb.from.username;
+      const displayName = cb.from.first_name || cb.from.username || fromId;
+
+      // Check if admin is completing a withdrawal
+      if (username === ADMIN_USERNAME && cb.data?.startsWith("complete_withdrawal:")) {
+        const parts = cb.data.split(":");
+        if (parts.length === 3) {
+          const userId = parts[1];
+          const amount = parseFloat(parts[2]);
+          if (!isNaN(amount)) {
+            await completeWithdrawal(fromId, userId, amount);
+            await answerCallbackQuery(cb.id, "Withdrawal completed.");
+            return new Response("OK");
+          }
+        }
+      }
+
+      // Otherwise, handle general callback
+      await handleCallback(cb);
     }
 
     return new Response("OK");
   } catch (e) {
-    console.error("server error", e);
+    console.error("Server error", e);
     return new Response("Error", { status: 500 });
   }
 });
-
-async function sendUserProfile(adminChatId: string, userId: string) {
-  const p = await getProfile(userId);
-  if (!p) {
-    await sendMessage(adminChatId, "User not found.");
-    return;
-  }
-  const winRate = p.gamesPlayed ? ((p.wins / p.gamesPlayed) * 100).toFixed(1) : "0";
-  const msg = await getText(adminChatId, 'profile', {
-    name: getDisplayName(p),
-    id: p.id,
-    trophies: p.trophies,
-    stars: p.stars,
-    games: p.gamesPlayed,
-    wins: p.wins,
-    losses: p.losses,
-    draws: p.draws,
-    winrate: winRate,
-  });
-  await sendMessage(adminChatId, msg);
-}
+```
