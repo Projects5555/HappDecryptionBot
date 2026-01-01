@@ -1,4 +1,4 @@
-// main.ts
+
 // 🎮 Tic Tac Toe Telegram Bot with matchmaking, trophies, stars, withdrawals, and admin panel
 // 💾 Uses Deno KV for all persistent storage
 // 🌍 Supports English (EN) and Russian (RU)
@@ -671,4 +671,5 @@ async function getBotStats() {
     if (entry.value.last_active > now - 86400000) active24h++;
   }
   return { totalUsers, active24h, totalMatches, starsDistributed };
+
 }
