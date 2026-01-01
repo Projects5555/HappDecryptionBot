@@ -1160,4 +1160,3 @@ serve(async (req: Request) => {
     return new Response("Error", { status: 500 });
   }
 });
-```
