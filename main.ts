@@ -28,6 +28,7 @@ interface UserProfile {
   matchesPlayed: number;
   wins: number;
   lastDailyBonus: number; // timestamp
+  lastActive: number;
 }
 
 interface Match {
@@ -74,7 +75,24 @@ const TEXTS = {
     withdraw_sent: "✅ Withdrawal request sent to admin.",
     withdraw_fail: "❌ Cannot withdraw (Min 50).",
     game_over: "🏁 Game Over",
-    surrender: "🏳️ Surrender"
+    surrender: "🏳️ Surrender",
+    game_header: "Round {rounds}/3 | Score: {score}\nVS {opp}\n\n{turnText}",
+    profile: "👤 **Profile**\n\nID: `{id}`\n🏆 Trophies: {trophies}\n⭐️ Stars: {stars}\n📊 Matches: {matchesPlayed}\n🏅 Wins: {wins}",
+    leaderboard_title: "🏅 **Top 10 Trophies**\n\n",
+    leaderboard_entry: "{i}. ID:{uid} - 🏆 {score}\n",
+    admin_panel: "🕵️‍♂️ **Admin Panel (@Masakoff)**\n\nUsers: {totalUsers}\nActive (24h): {active24h}\nMatches: {matches}\n\nCommands:\n/add_stars [id] [amount]\n/remove_stars [id] [amount]",
+    add_stars_confirm: "Added {amt} stars to {uid}. New balance: {bal}",
+    add_stars_notify: "Admin added {amt} stars to your balance.",
+    remove_stars_confirm: "Removed {amt} stars from {uid}. New balance: {bal}",
+    remove_stars_notify: "Admin removed {amt} stars from your balance.",
+    withdraw_request: "💸 **Withdrawal Request**\nUser: {user}\nAmount: {amt} Stars\nReqID: {reqid}",
+    admin_complete_btn: "✅ Complete",
+    withdraw_complete_admin: "✅ Withdrawal Completed.",
+    withdraw_complete_user: "✅ Your withdrawal of {amt} Stars has been completed!",
+    stake_returned: "Stake returned.",
+    you_surrendered: "You surrendered!",
+    trophies: "Trophies",
+    stars: "Stars"
   },
   ru: {
     choose_lang: "👋 Добро пожаловать! Выберите язык:",
@@ -103,7 +121,24 @@ const TEXTS = {
     withdraw_sent: "✅ Заявка отправлена админу.",
     withdraw_fail: "❌ Нельзя вывести (Мин 50).",
     game_over: "🏁 Игра окончена",
-    surrender: "🏳️ Сдаться"
+    surrender: "🏳️ Сдаться",
+    game_header: "Раунд {rounds}/3 | Счёт: {score}\nПротив {opp}\n\n{turnText}",
+    profile: "👤 **Профиль**\n\nID: `{id}`\n🏆 Кубки: {trophies}\n⭐️ Звёзды: {stars}\n📊 Матчи: {matchesPlayed}\n🏅 Победы: {wins}",
+    leaderboard_title: "🏅 **Топ 10 по кубкам**\n\n",
+    leaderboard_entry: "{i}. ID:{uid} - 🏆 {score}\n",
+    admin_panel: "🕵️‍♂️ **Панель админа (@Masakoff)**\n\nПользователей: {totalUsers}\nАктивных (24ч): {active24h}\nМатчей: {matches}\n\nКоманды:\n/add_stars [id] [amount]\n/remove_stars [id] [amount]",
+    add_stars_confirm: "Добавлено {amt} звёзд пользователю {uid}. Новый баланс: {bal}",
+    add_stars_notify: "Админ добавил {amt} звёзд на ваш баланс.",
+    remove_stars_confirm: "Удалено {amt} звёзд у {uid}. Новый баланс: {bal}",
+    remove_stars_notify: "Админ удалил {amt} звёзд с вашего баланса.",
+    withdraw_request: "💸 **Запрос на вывод**\nПользователь: {user}\nСумма: {amt} звёзд\nReqID: {reqid}",
+    admin_complete_btn: "✅ Завершить",
+    withdraw_complete_admin: "✅ Вывод завершён.",
+    withdraw_complete_user: "✅ Ваш вывод {amt} звёзд завершён!",
+    stake_returned: "Ставка возвращена.",
+    you_surrendered: "Вы сдались!",
+    trophies: "кубков",
+    stars: "звёзд"
   }
 };
 
@@ -150,7 +185,8 @@ async function getProfile(userId: number): Promise<UserProfile> {
     stars: 5, // Start with 5 stars bonus
     matchesPlayed: 0,
     wins: 0,
-    lastDailyBonus: 0
+    lastDailyBonus: 0,
+    lastActive: Date.now()
   };
 }
 
@@ -178,7 +214,7 @@ function checkWin(board: string[]): string | null {
   return null;
 }
 
-function getBoardMarkup(match: Match) {
+function getBoardMarkup(match: Match, lang: Lang) {
   const keyboard = [];
   for (let i = 0; i < 3; i++) {
     const row = [];
@@ -191,7 +227,7 @@ function getBoardMarkup(match: Match) {
     keyboard.push(row);
   }
   // Surrender button
-  keyboard.push([{ text: "🏳️", callback_data: `surr:${match.id}` }]);
+  keyboard.push([{ text: t(lang, "surrender"), callback_data: `surr:${match.id}` }]);
   return { inline_keyboard: keyboard };
 }
 
@@ -200,12 +236,18 @@ async function sendMatchUpdate(match: Match) {
   const p2 = await getProfile(match.p2);
 
   const send = async (userId: number, oppName: string, mark: string) => {
+    const lang = (p1.id === userId ? p1.language : p2.language) as Lang;
     const isTurn = match.turn === userId;
-    const text = isTurn 
-      ? t(p1.id === userId ? p1.language : p2.language, "your_turn", { mark })
-      : t(p1.id === userId ? p1.language : p2.language, "opp_turn");
+    const turnText = isTurn 
+      ? t(lang, "your_turn", { mark })
+      : t(lang, "opp_turn");
     
-    const header = `Round ${match.rounds}/3 | Score: ${match.wins[match.p1]}-${match.wins[match.p2]}\nVS ${oppName}\n\n${text}`;
+    const header = t(lang, "game_header", {
+      rounds: match.rounds,
+      score: `${match.wins[match.p1]}-${match.wins[match.p2]}`,
+      opp: oppName,
+      turnText
+    });
     
     // Attempt edit, if fail (message too old/missing) send new
     if (match.msgIds[userId]) {
@@ -213,7 +255,7 @@ async function sendMatchUpdate(match: Match) {
         chat_id: userId,
         message_id: match.msgIds[userId],
         text: header,
-        reply_markup: getBoardMarkup(match)
+        reply_markup: getBoardMarkup(match, lang)
       });
       if (!res.ok) match.msgIds[userId] = 0; // Trigger resend if edit failed
     } 
@@ -222,7 +264,7 @@ async function sendMatchUpdate(match: Match) {
       const res = await api("sendMessage", {
         chat_id: userId,
         text: header,
-        reply_markup: getBoardMarkup(match)
+        reply_markup: getBoardMarkup(match, lang)
       });
       if (res.result) match.msgIds[userId] = res.result.message_id;
     }
@@ -236,9 +278,7 @@ async function endRound(match: Match, winnerMark: string | "draw") {
   const p1 = await getProfile(match.p1);
   const p2 = await getProfile(match.p2);
   
-  // Logic: 3 Rounds fixed? Or Best of 3? Prompt says "3-round trophy match".
-  // Let's do best of 3. If someone reaches 2 wins, they win match.
-  
+  // Logic: Best of 3
   if (winnerMark === "X") match.wins[match.p1]++;
   if (winnerMark === "O") match.wins[match.p2]++;
 
@@ -263,14 +303,18 @@ async function endRound(match: Match, winnerMark: string | "draw") {
     
     if (isDraw) {
         // Tie logic
-        await api("sendMessage", { chat_id: match.p1, text: t(p1.language, "draw_match") });
-        await api("sendMessage", { chat_id: match.p2, text: t(p2.language, "draw_match") });
+        let drawTextP1 = t(p1.language, "draw_match");
+        let drawTextP2 = t(p2.language, "draw_match");
         // Return stake for stars?
         if (match.type === "star") {
            // Return the 1 star to each
            p1.stars += 1; p2.stars += 1;
            await saveProfile(p1); await saveProfile(p2);
+           drawTextP1 += "\n" + t(p1.language, "stake_returned");
+           drawTextP2 += "\n" + t(p2.language, "stake_returned");
         }
+        await api("sendMessage", { chat_id: match.p1, text: drawTextP1 });
+        await api("sendMessage", { chat_id: match.p2, text: drawTextP2 });
     } else if (matchWinner && matchLoser) {
         const winnerProfile = matchWinner === match.p1 ? p1 : p2;
         const loserProfile = matchWinner === match.p1 ? p2 : p1;
@@ -280,16 +324,17 @@ async function endRound(match: Match, winnerMark: string | "draw") {
         loserProfile.matchesPlayed++;
 
         let reward = 0;
-        let currency = "";
         let lost = 0;
+        const currencyKey = match.type === "trophy" ? "trophies" : "stars";
+        const currency = t(winnerProfile.language, currencyKey);
 
         if (match.type === "trophy") {
-            reward = 1; lost = 1; currency = "Trophies";
+            reward = 1; lost = 1;
             winnerProfile.trophies += 1;
             loserProfile.trophies = Math.max(0, loserProfile.trophies - 1);
         } else {
             // Star match
-            reward = 1.5; lost = 1; currency = "Stars";
+            reward = 1.5; lost = 1;
             winnerProfile.stars += 1.5;
             // Loser already paid 1 star to enter, so we don't deduct again, just don't refund.
         }
@@ -303,7 +348,7 @@ async function endRound(match: Match, winnerMark: string | "draw") {
         });
         await api("sendMessage", { 
             chat_id: loserProfile.id, 
-            text: t(loserProfile.language, "lose_match", { lost, currency }) 
+            text: t(loserProfile.language, "lose_match", { lost, currency: t(loserProfile.language, currencyKey) }) 
         });
 
         // Admin stats update
@@ -322,11 +367,6 @@ async function endRound(match: Match, winnerMark: string | "draw") {
     match.board = Array(9).fill("");
     // Swap turn
     match.turn = match.rounds % 2 !== 0 ? match.p1 : match.p2;
-    // Notify
-    const roundRes = winnerMark === "draw" ? "draw_round" : (winnerMark === "X" && match.p1 === match.p1) ? "win_round" : "lose_round"; // simplified logic msg
-    
-    // Quick alerts
-    await api("answerCallbackQuery", { callback_query_id: "0", text: "Round Over!" }); // Dummy ID if we can't track exact
     await sendMatchUpdate(match);
   }
 }
@@ -410,6 +450,7 @@ async function sendLangSelection(userId: number) {
 }
 
 async function sendAdminPanel(userId: number) {
+  const p = await getProfile(userId);
   // Calculate Stats
   const usersIt = kv.list({ prefix: ["users"] });
   let totalUsers = 0;
@@ -418,34 +459,51 @@ async function sendAdminPanel(userId: number) {
   for await (const entry of usersIt) {
     totalUsers++;
     const u = entry.value as UserProfile;
-    // Assuming lastActive is updated on interactions (simplified here)
-    if (u.lastDailyBonus > now - 86400000) active24h++;
+    if (u.lastActive > now - 86400000) active24h++;
   }
   
   const matches = (await kv.get<number>(["stats", "total_matches"])).value || 0;
   
-  const text = `🕵️‍♂️ **Admin Panel (@Masakoff)**\n\nUsers: ${totalUsers}\nActive (24h): ${active24h}\nMatches: ${matches}\n\nCommands:\n/add_stars [id] [amount]\n/remove_stars [id] [amount]`;
+  const text = t(p.language, "admin_panel", { totalUsers, active24h, matches });
   await api("sendMessage", { chat_id: userId, text, parse_mode: "Markdown" });
 }
 
 // --- HANDLERS ---
 
 async function handleUpdate(update: any) {
+  let userId: number | undefined;
+  let username: string | undefined;
+
+  if (update.message) {
+    const m = update.message;
+    userId = m.from.id;
+    username = m.from.username;
+  } else if (update.callback_query) {
+    const cb = update.callback_query;
+    userId = cb.from.id;
+    username = cb.from.username;
+  }
+
+  if (!userId) return;
+
+  // Update lastActive
+  let p = await getProfile(userId);
+  p.lastActive = Date.now();
+  await saveProfile(p);
+
+  // Save Admin ID if username matches
+  if (username === ADMIN_USERNAME) {
+      adminChatId = userId;
+      await kv.set(["config", "admin_id"], userId);
+  }
+
   if (update.message) {
     const m = update.message;
     const text = m.text || "";
-    const userId = m.from.id;
-    const username = m.from.username;
-
-    // Save Admin ID if username matches
-    if (username === ADMIN_USERNAME) {
-        adminChatId = userId;
-        await kv.set(["config", "admin_id"], userId);
-    }
 
     if (text === "/start") {
       // Initialize or fetch user
-      const p = await getProfile(userId);
+      p = await getProfile(userId);
       p.username = username;
       p.firstName = m.from.first_name;
       await saveProfile(p);
@@ -464,20 +522,30 @@ async function handleUpdate(update: any) {
        if(parts.length === 3) {
            const targetId = parseInt(parts[1]);
            const amt = parseFloat(parts[2]);
-           const p = await getProfile(targetId);
-           p.stars += amt;
-           await saveProfile(p);
-           await api("sendMessage", { chat_id: userId, text: `Added ${amt} stars to ${targetId}. New balance: ${p.stars}`});
-           await api("sendMessage", { chat_id: targetId, text: `Admin added ${amt} stars to your balance.`});
+           const targetP = await getProfile(targetId);
+           targetP.stars += amt;
+           await saveProfile(targetP);
+           await api("sendMessage", { chat_id: userId, text: t(p.language, "add_stars_confirm", {amt, uid: targetId, bal: targetP.stars})});
+           await api("sendMessage", { chat_id: targetId, text: t(targetP.language, "add_stars_notify", {amt})});
+       }
+    } else if (text.startsWith("/remove_stars") && username === ADMIN_USERNAME) {
+       const parts = text.split(" ");
+       if(parts.length === 3) {
+           const targetId = parseInt(parts[1]);
+           const amt = parseFloat(parts[2]);
+           const targetP = await getProfile(targetId);
+           targetP.stars = Math.max(0, targetP.stars - amt);
+           await saveProfile(targetP);
+           await api("sendMessage", { chat_id: userId, text: t(p.language, "remove_stars_confirm", {amt, uid: targetId, bal: targetP.stars})});
+           await api("sendMessage", { chat_id: targetId, text: t(targetP.language, "remove_stars_notify", {amt})});
        }
     }
   } else if (update.callback_query) {
     const cb = update.callback_query;
     const data = cb.data;
-    const userId = cb.from.id;
     const msgId = cb.message.message_id;
 
-    let p = await getProfile(userId);
+    p = await getProfile(userId);
     
     if (data.startsWith("lang:")) {
       const lang = data.split(":")[1] as Lang;
@@ -487,7 +555,13 @@ async function handleUpdate(update: any) {
       await sendMainMenu(userId);
     } 
     else if (data === "menu:profile") {
-      const txt = `👤 **Profile**\n\nID: \`${p.id}\`\n🏆 Trophies: ${p.trophies}\n⭐️ Stars: ${p.stars}\n📊 Matches: ${p.matchesPlayed}\n🏅 Wins: ${p.wins}`;
+      const txt = t(p.language, "profile", { 
+        id: p.id, 
+        trophies: p.trophies, 
+        stars: p.stars, 
+        matchesPlayed: p.matchesPlayed, 
+        wins: p.wins 
+      });
       const kb = { inline_keyboard: [[{ text: t(p.language, "withdraw_btn"), callback_data: "withdraw" }]] };
       await api("sendMessage", { chat_id: userId, text: txt, parse_mode: "Markdown", reply_markup: kb });
     }
@@ -504,26 +578,21 @@ async function handleUpdate(update: any) {
        }
     }
     else if (data === "menu:leaderboard") {
-        const iter = kv.list({ prefix: ["leaderboard", "trophies"] }, { limit: 10, reverse: true });
-        let txt = "🏅 **Top 10 Trophies**\n";
-        let i = 1;
-        for await (const entry of iter) {
-             const uid = entry.key[2] as number;
-             const score = entry.value;
-             // Ideally fetch name, but for speed just ID or cache names separately.
-             // We'll use ID here.
-             txt += `${i}. ID:${uid} - 🏆 ${score}\n`;
-             i++;
+        const entries: {uid: number, score: number}[] = [];
+        for await (const entry of kv.list({ prefix: ["leaderboard", "trophies"] })) {
+          entries.push({ uid: entry.key[2] as number, score: entry.value as number });
         }
+        entries.sort((a, b) => b.score - a.score);
+        let txt = t(p.language, "leaderboard_title");
+        entries.slice(0, 10).forEach((e, index) => {
+          txt += t(p.language, "leaderboard_entry", { i: index + 1, uid: e.uid, score: e.score });
+        });
         await api("sendMessage", { chat_id: userId, text: txt, parse_mode: "Markdown" });
     }
     else if (data === "withdraw") {
         if (p.stars >= 50) {
-            // Initiate withdrawal
-            // Deduct stars immediately
-            p.stars -= 50; // Or full amount? Prompt says "Withdraw stars". Let's assume withdrawing 50 chunks for simplicity or prompt for amount. 
-            // To keep one file simple, let's withdraw ALL stars above 50, or fixed 50.
-            // Let's do a fixed 50 withdrawal request.
+            // Initiate withdrawal - fixed 50 for simplicity
+            p.stars -= 50;
             await saveProfile(p);
             
             // Store request
@@ -539,12 +608,13 @@ async function handleUpdate(update: any) {
             }
             
             if (adminChatId) {
+                const adminP = await getProfile(adminChatId);
                 await api("sendMessage", { 
                     chat_id: adminChatId, 
-                    text: `💸 **Withdrawal Request**\nUser: ${userId}\nAmount: 50 Stars\nReqID: ${reqId}`,
+                    text: t(adminP.language, "withdraw_request", { user: userId, amt: 50, reqid: reqId }),
                     parse_mode: "Markdown",
                     reply_markup: {
-                        inline_keyboard: [[{ text: "✅ Complete", callback_data: `admin_pay:${reqId}:${userId}` }]]
+                        inline_keyboard: [[{ text: t(adminP.language, "admin_complete_btn"), callback_data: `admin_pay:${reqId}:${userId}` }]]
                     }
                 });
             }
@@ -557,10 +627,11 @@ async function handleUpdate(update: any) {
         if (userId !== adminChatId) return;
         const [_, reqId, targetUserStr] = data.split(":");
         const targetId = parseInt(targetUserStr);
+        const targetP = await getProfile(targetId);
         
         await kv.delete(["withdrawals", reqId]);
-        await api("editMessageText", { chat_id: userId, message_id: msgId, text: "✅ Withdrawal Completed." });
-        await api("sendMessage", { chat_id: targetId, text: "✅ Your withdrawal of 50 Stars has been completed!" });
+        await api("editMessageText", { chat_id: userId, message_id: msgId, text: t(p.language, "withdraw_complete_admin") });
+        await api("sendMessage", { chat_id: targetId, text: t(targetP.language, "withdraw_complete_user", {amt: 50}) });
     }
     else if (data.startsWith("play:")) {
         const type = data.split(":")[1];
@@ -617,21 +688,28 @@ async function handleUpdate(update: any) {
         // Check Round Win
         const win = checkWin(match.board);
         if (win) {
+            let alertText: string;
+            if (win === "draw") {
+              alertText = t(p.language, "draw_round");
+            } else {
+              alertText = t(p.language, "win_round");
+            }
+            await api("answerCallbackQuery", { callback_query_id: cb.id, text: alertText, show_alert: true });
             await endRound(match, win);
         } else {
             // Next turn
             match.turn = match.turn === match.p1 ? match.p2 : match.p1;
             await sendMatchUpdate(match);
+            await api("answerCallbackQuery", { callback_query_id: cb.id });
         }
-        await api("answerCallbackQuery", { callback_query_id: cb.id });
     }
     else if (data.startsWith("surr:")) {
         const matchId = data.split(":")[1];
         const match = activeMatches.get(matchId);
         if (match && (match.p1 === userId || match.p2 === userId)) {
+            await api("answerCallbackQuery", { callback_query_id: cb.id, text: t(p.language, "you_surrendered"), show_alert: true });
             const winnerId = userId === match.p1 ? match.p2 : match.p1;
             // Force win for opponent for the whole match
-            // Set opponent wins to 2 to trigger match end logic
             match.wins[winnerId] = 2;
             match.wins[userId] = 0;
             // Reuse endRound logic with "fake" winner mark to trigger finishMatch
