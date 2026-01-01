@@ -46,6 +46,11 @@ interface Match {
   active: boolean;
 }
 
+interface QueueEntry {
+  userId: number;
+  joinTime: number;
+}
+
 // --- LOCALIZATION ---
 const TEXTS = {
   en: {
@@ -92,7 +97,8 @@ const TEXTS = {
     stake_returned: "Stake returned.",
     you_surrendered: "You surrendered!",
     trophies: "Trophies",
-    stars: "Stars"
+    stars: "Stars",
+    queue_timeout: "⌛ Search timed out. No opponent found within 1 minute."
   },
   ru: {
     choose_lang: "👋 Добро пожаловать! Выберите язык:",
@@ -138,15 +144,16 @@ const TEXTS = {
     stake_returned: "Ставка возвращена.",
     you_surrendered: "Вы сдались!",
     trophies: "кубков",
-    stars: "звёзд"
+    stars: "звёзд",
+    queue_timeout: "⌛ Поиск прерван. Соперник не найден за 1 минуту."
   }
 };
 
 // --- RUNTIME STATE ---
 // We keep active matches in memory for speed, profiles in KV
 const activeMatches: Map<string, Match> = new Map();
-const trophyQueue: number[] = [];
-const starQueue: number[] = [];
+let trophyQueue: QueueEntry[] = [];
+let starQueue: QueueEntry[] = [];
 let adminChatId: number | null = null; // Discovered dynamically
 
 // --- HELPERS ---
@@ -196,6 +203,33 @@ async function saveProfile(profile: UserProfile) {
   await kv.set(["leaderboard", "trophies", profile.id], profile.trophies);
   await kv.set(["leaderboard", "stars", profile.id], profile.stars);
 }
+
+// --- QUEUE CLEANUP ---
+async function cleanQueues() {
+  const now = Date.now();
+  const clean = async (queue: QueueEntry[], isStar: boolean) => {
+    const newQueue: QueueEntry[] = [];
+    for (const entry of queue) {
+      if (now - entry.joinTime > 60000) {
+        const p = await getProfile(entry.userId);
+        let msg = t(p.language, "queue_timeout");
+        if (isStar) {
+          p.stars += 1;
+          await saveProfile(p);
+          msg += "\n" + t(p.language, "stake_returned");
+        }
+        await api("sendMessage", { chat_id: entry.userId, text: msg });
+      } else {
+        newQueue.push(entry);
+      }
+    }
+    return newQueue;
+  };
+  trophyQueue = await clean(trophyQueue, false);
+  starQueue = await clean(starQueue, true);
+}
+
+setInterval(() => cleanQueues(), 10000);
 
 // --- GAME LOGIC ---
 
@@ -374,18 +408,24 @@ async function endRound(match: Match, winnerMark: string | "draw") {
 async function tryMatchmaking() {
   // Trophy Queue
   if (trophyQueue.length >= 2) {
-    const p1 = trophyQueue.shift()!;
-    const p2 = trophyQueue.shift()!;
-    if (p1 === p2) { trophyQueue.push(p1); return; } // Anti-self match
-    createMatch(p1, p2, "trophy");
+    const e1 = trophyQueue.shift()!;
+    const e2 = trophyQueue.shift()!;
+    if (e1.userId === e2.userId) {
+      trophyQueue.push(e1); // Push back one
+      return;
+    }
+    createMatch(e1.userId, e2.userId, "trophy");
   }
 
   // Star Queue
   if (starQueue.length >= 2) {
-    const p1 = starQueue.shift()!;
-    const p2 = starQueue.shift()!;
-    if (p1 === p2) { starQueue.push(p1); return; }
-    createMatch(p1, p2, "star");
+    const e1 = starQueue.shift()!;
+    const e2 = starQueue.shift()!;
+    if (e1.userId === e2.userId) {
+      starQueue.push(e1);
+      return;
+    }
+    createMatch(e1.userId, e2.userId, "star");
   }
 }
 
@@ -641,7 +681,9 @@ async function handleUpdate(update: any) {
         for (const m of activeMatches.values()) {
             if (m.p1 === userId || m.p2 === userId) inGame = true;
         }
-        if (inGame || trophyQueue.includes(userId) || starQueue.includes(userId)) {
+        const inTrophyQueue = trophyQueue.some(e => e.userId === userId);
+        const inStarQueue = starQueue.some(e => e.userId === userId);
+        if (inGame || inTrophyQueue || inStarQueue) {
             await api("answerCallbackQuery", { callback_query_id: cb.id, text: "⚠️ You are already in a game or queue!", show_alert: true });
             return;
         }
@@ -654,9 +696,9 @@ async function handleUpdate(update: any) {
             // Deduct stake immediately
             p.stars -= 1;
             await saveProfile(p);
-            starQueue.push(userId);
+            starQueue.push({ userId, joinTime: Date.now() });
         } else {
-            trophyQueue.push(userId);
+            trophyQueue.push({ userId, joinTime: Date.now() });
         }
         
         await api("sendMessage", { chat_id: userId, text: t(p.language, "joined_queue") });
