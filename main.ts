@@ -96,6 +96,7 @@ const TEXTS = {
     withdraw_complete_user: "✅ Your withdrawal of {amt} Stars has been completed!",
     stake_returned: "Stake returned.",
     you_surrendered: "You surrendered!",
+    opp_surrendered: "Opponent surrendered!",
     trophies: "Trophies",
     stars: "Stars",
     queue_timeout: "⌛ Search timed out. No opponent found within 1 minute."
@@ -143,6 +144,7 @@ const TEXTS = {
     withdraw_complete_user: "✅ Ваш вывод {amt} звёзд завершён!",
     stake_returned: "Ставка возвращена.",
     you_surrendered: "Вы сдались!",
+    opp_surrendered: "Соперник сдался!",
     trophies: "кубков",
     stars: "звёзд",
     queue_timeout: "⌛ Поиск прерван. Соперник не найден за 1 минуту."
@@ -248,6 +250,17 @@ function checkWin(board: string[]): string | null {
   return null;
 }
 
+function getBoardText(board: string[]): string {
+  const map = (c: string) => c === "X" ? "❌" : c === "O" ? "⭕" : "⬜";
+  return [
+    `${map(board[0])} | ${map(board[1])} | ${map(board[2])}`,
+    "---------",
+    `${map(board[3])} | ${map(board[4])} | ${map(board[5])}`,
+    "---------",
+    `${map(board[6])} | ${map(board[7])} | ${map(board[8])}`,
+  ].join("\n");
+}
+
 function getBoardMarkup(match: Match, lang: Lang) {
   const keyboard = [];
   for (let i = 0; i < 3; i++) {
@@ -269,12 +282,25 @@ async function sendMatchUpdate(match: Match) {
   const p1 = await getProfile(match.p1);
   const p2 = await getProfile(match.p2);
 
-  const send = async (userId: number, oppName: string, mark: string) => {
+  const send = async (userId: number, oppName: string, myMark: string) => {
     const lang = (p1.id === userId ? p1.language : p2.language) as Lang;
+    const result = checkWin(match.board);
+    let turnText: string;
     const isTurn = match.turn === userId;
-    const turnText = isTurn 
-      ? t(lang, "your_turn", { mark })
-      : t(lang, "opp_turn");
+
+    if (result) {
+      if (result === "draw") {
+        turnText = t(lang, "draw_round");
+      } else if (result === myMark) {
+        turnText = t(lang, "win_round");
+      } else {
+        turnText = t(lang, "lose_round");
+      }
+    } else {
+      turnText = isTurn 
+        ? t(lang, "your_turn", { mark: myMark })
+        : t(lang, "opp_turn");
+    }
     
     const header = t(lang, "game_header", {
       rounds: match.rounds,
@@ -282,14 +308,23 @@ async function sendMatchUpdate(match: Match) {
       opp: oppName,
       turnText
     });
+
+    let text = header;
+    let reply_markup;
+    if (result) {
+      text += "\n\n" + getBoardText(match.board);
+      reply_markup = { inline_keyboard: [] };
+    } else {
+      reply_markup = getBoardMarkup(match, lang);
+    }
     
     // Attempt edit, if fail (message too old/missing) send new
     if (match.msgIds[userId]) {
       const res = await api("editMessageText", {
         chat_id: userId,
         message_id: match.msgIds[userId],
-        text: header,
-        reply_markup: getBoardMarkup(match, lang)
+        text,
+        reply_markup
       });
       if (!res.ok) match.msgIds[userId] = 0; // Trigger resend if edit failed
     } 
@@ -297,15 +332,15 @@ async function sendMatchUpdate(match: Match) {
     if (!match.msgIds[userId]) {
       const res = await api("sendMessage", {
         chat_id: userId,
-        text: header,
-        reply_markup: getBoardMarkup(match, lang)
+        text,
+        reply_markup
       });
       if (res.result) match.msgIds[userId] = res.result.message_id;
     }
   };
 
-  await send(match.p1, p2.firstName, "❌");
-  await send(match.p2, p1.firstName, "⭕");
+  await send(match.p1, p2.firstName, "X");
+  await send(match.p2, p1.firstName, "O");
 }
 
 async function endRound(match: Match, winnerMark: string | "draw") {
@@ -727,21 +762,39 @@ async function handleUpdate(update: any) {
         const mark = match.turn === match.p1 ? match.p1Mark : match.p2Mark;
         match.board[cellIdx] = mark;
         
+        // Update board for both players
+        await sendMatchUpdate(match);
+        
         // Check Round Win
-        const win = checkWin(match.board);
-        if (win) {
-            let alertText: string;
-            if (win === "draw") {
+        const result = checkWin(match.board);
+        if (result) {
+            let alertText;
+            if (result === "draw") {
               alertText = t(p.language, "draw_round");
             } else {
               alertText = t(p.language, "win_round");
             }
             await api("answerCallbackQuery", { callback_query_id: cb.id, text: alertText, show_alert: true });
-            await endRound(match, win);
+            
+            // Notify opponent
+            const oppId = userId === match.p1 ? match.p2 : match.p1;
+            const oppP = await getProfile(oppId);
+            let oppText;
+            if (result === "draw") {
+              oppText = t(oppP.language, "draw_round");
+            } else {
+              oppText = t(oppP.language, "lose_round");
+            }
+            await api("sendMessage", { chat_id: oppId, text: oppText });
+            
+            // Prevent further moves during delay
+            match.turn = 0;
+            
+            // Delay to allow viewing the final board
+            setTimeout(() => endRound(match, result === "draw" ? "draw" : mark), 2000);
         } else {
             // Next turn
             match.turn = match.turn === match.p1 ? match.p2 : match.p1;
-            await sendMatchUpdate(match);
             await api("answerCallbackQuery", { callback_query_id: cb.id });
         }
     }
@@ -750,12 +803,31 @@ async function handleUpdate(update: any) {
         const match = activeMatches.get(matchId);
         if (match && (match.p1 === userId || match.p2 === userId)) {
             await api("answerCallbackQuery", { callback_query_id: cb.id, text: t(p.language, "you_surrendered"), show_alert: true });
-            const winnerId = userId === match.p1 ? match.p2 : match.p1;
-            // Force win for opponent for the whole match
-            match.wins[winnerId] = 2;
-            match.wins[userId] = 0;
-            // Reuse endRound logic with "fake" winner mark to trigger finishMatch
-            const winnerMark = winnerId === match.p1 ? "X" : "O";
+            
+            const oppId = userId === match.p1 ? match.p2 : match.p1;
+            const oppP = await getProfile(oppId);
+            await api("sendMessage", { chat_id: oppId, text: t(oppP.language, "opp_surrendered") });
+            
+            // Edit game messages to show game over
+            if (match.msgIds[userId]) {
+              await api("editMessageText", {
+                chat_id: userId,
+                message_id: match.msgIds[userId],
+                text: t(p.language, "you_surrendered") + "\n" + t(p.language, "game_over"),
+                reply_markup: { inline_keyboard: [] }
+              });
+            }
+            if (match.msgIds[oppId]) {
+              await api("editMessageText", {
+                chat_id: oppId,
+                message_id: match.msgIds[oppId],
+                text: t(oppP.language, "opp_surrendered") + "\n" + t(oppP.language, "game_over"),
+                reply_markup: { inline_keyboard: [] }
+              });
+            }
+            
+            // Force win for opponent
+            const winnerMark = oppId === match.p1 ? "X" : "O";
             await endRound(match, winnerMark);
         }
     }
