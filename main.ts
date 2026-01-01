@@ -23,8 +23,8 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 const TOKEN = Deno.env.get("BOT_TOKEN")!;
 if (!TOKEN) throw new Error("BOT_TOKEN env var is required");
 const API = `https://api.telegram.org/bot${TOKEN}`;
-const SECRET_PATH = "/ticbot"; // make sure webhook path matches
-const BOT_USERNAME = "TicBot"; // Adjust to your bot's username
+const SECRET_PATH = Deno.env.get("SECRET_PATH"); // make sure webhook path matches
+const BOT_USERNAME = "HappDecryptionBot"; // Adjust to your bot's username
 
 // Deno KV
 const kv = await Deno.openKv();
