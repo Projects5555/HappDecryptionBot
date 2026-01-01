@@ -1,4 +1,4 @@
-
+// main.ts
 // 🎮 Tic Tac Toe Telegram Bot with matchmaking, trophies, stars, withdrawals, and admin panel
 // 💾 Uses Deno KV for all persistent storage
 // 🌍 Supports English (EN) and Russian (RU)
@@ -10,7 +10,6 @@
 // 🔧 Admin (@Masakoff only): stats, pending withdrawals with completion
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { crypto } from "https://deno.land/std@0.224.0/crypto/crypto.ts";
 
 // -------------------- Telegram Setup --------------------
 const TOKEN = Deno.env.get("BOT_TOKEN");
@@ -68,30 +67,30 @@ const MESSAGES: Record<string, { en: string; ru: string }> = {
 
 // -------------------- Helper Functions --------------------
 async function sendMessage(chatId: string, text: string, parseMode = "Markdown", replyMarkup?: any) {
-  const body = { chat_id: chatId, text, parse_mode: parseMode };
-  if (replyMarkup) (body as any).reply_markup = replyMarkup;
+  const body: any = { chat_id: chatId, text, parse_mode: parseMode };
+  if (replyMarkup) body.reply_markup = replyMarkup;
   const res = await fetch(`${API}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   return (await res.json()).result || null;
 }
 
-async function editMessageText(chatId: string, messageId: number, text: string, parseMode = "Markdown", replyMarkup?: any) {
-  const body = { chat_id: chatId, message_id: messageId, text, parse_mode: parseMode };
-  if (replyMarkup) (body as any).reply_markup = replyMarkup;
+async function editMessageText(chatId: string, messageId: number, text: string, parseMode = "HTML", replyMarkup?: any) {
+  const body: any = { chat_id: chatId, message_id: messageId, text, parse_mode: parseMode };
+  if (replyMarkup) body.reply_markup = replyMarkup;
   const res = await fetch(`${API}/editMessageText`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   return (await res.json()).result || null;
 }
 
 async function answerCallbackQuery(id: string, text?: string, showAlert = false) {
-  const body = { callback_query_id: id };
-  if (text) (body as any).text = text;
-  if (showAlert) (body as any).show_alert = true;
+  const body: any = { callback_query_id: id };
+  if (text) body.text = text;
+  if (showAlert) body.show_alert = true;
   await fetch(`${API}/answerCallbackQuery`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
 async function getText(userId: string, key: string, params: Record<string, string> = {}): Promise<string> {
   const user = await getUser(userId);
   const lang = user?.lang || "en";
-  let text = MESSAGES[key][lang] || MESSAGES[key].en;
+  let text = MESSAGES[key][lang as keyof typeof MESSAGES[string]] || MESSAGES[key].en;
   for (const [k, v] of Object.entries(params)) {
     text = text.replace(`{${k}}`, v);
   }
@@ -110,7 +109,7 @@ interface User {
   daily_date: string;
   current_match?: string;
   in_queue?: "trophy" | "star";
-  state?: string; // e.g., "waiting_withdraw_amount"
+  state?: string;
 }
 
 async function getUser(userId: string): Promise<User | null> {
@@ -149,10 +148,6 @@ async function updateDailyBonus(userId: string, user: User): Promise<boolean> {
 }
 
 async function incrementStats(key: "total_users" | "total_matches" | "stars_distributed", delta: number) {
-  await kv.atomic()
-    .sum(["stats", key], BigInt(delta * 100)) // use bigint for precision, but simple add
-    .commit();
-  // Note: for simplicity, we use separate set/get
   const entry = await kv.get<number>(["stats", key]);
   const current = entry.value || 0;
   await kv.set(["stats", key], current + delta);
@@ -160,15 +155,12 @@ async function incrementStats(key: "total_users" | "total_matches" | "stars_dist
 
 // -------------------- Game Logic --------------------
 function checkWinner(board: (null | "X" | "O")[][]): "X" | "O" | "tie" | null {
-  // rows
   for (let i = 0; i < 3; i++) {
     if (board[i][0] && board[i][0] === board[i][1] && board[i][1] === board[i][2]) return board[i][0]!;
   }
-  // cols
   for (let i = 0; i < 3; i++) {
     if (board[0][i] && board[0][i] === board[1][i] && board[1][i] === board[2][i]) return board[0][i]!;
   }
-  // diags
   if (board[0][0] && board[0][0] === board[1][1] && board[1][1] === board[2][2]) return board[0][0]!;
   if (board[0][2] && board[0][2] === board[1][1] && board[1][1] === board[2][0]) return board[0][2]!;
   if (board.flat().every(c => c !== null)) return "tie";
@@ -181,18 +173,17 @@ function generateKeyboard(board: (null | "X" | "O")[][]): any[][] {
     const row = [];
     for (let c = 0; c < 3; c++) {
       const cell = board[r][c];
-      if (cell) {
-        row.push({ text: cell === "X" ? "❌" : "⭕" });
-      } else {
-        row.push({ text: "▫️", callback_data: `move_${r}_${c}` });
-      }
+      row.push({
+        text: cell === "X" ? "❌" : cell === "O" ? "⭕" : "▫️",
+        callback_data: cell === null ? `move_${r}_${c}` : undefined,
+      });
     }
     kb.push(row);
   }
   return kb;
 }
 
-async function renderAndUpdateBoard(match: any, userId: string) {
+async function renderBoard(match: any, userId: string) {
   const players = match.players as string[];
   const oppId = players.find((p: string) => p !== userId)!;
   const oppUser = await getUser(oppId);
@@ -201,7 +192,6 @@ async function renderAndUpdateBoard(match: any, userId: string) {
   const isTurn = userId === match.current_turn;
   const myRounds = match.rounds_won[userId] || 0;
   const oppRounds = match.rounds_won[oppId] || 0;
-  const lang = (await getUser(userId))?.lang || "en";
 
   let extra = "";
   if (match.last_result) {
@@ -234,33 +224,47 @@ serve(async (req) => {
       const cbId = cb.id;
       const data = cb.data;
       const userId = String(cb.from.id);
-      const username = cb.from.username;
-      const chatId = String(cb.message.chat.id);
-      const messageId = cb.message.message_id;
-      const isPrivate = cb.message.chat.type === "private";
-      const isAdmin = isPrivate && username === ADMIN_USERNAME;
+      const fromUsername = cb.from.username;
+      const isAdmin = cb.from.username === ADMIN_USERNAME;
 
-      // Save admin ID on first interaction
+      // Save admin ID if needed
       if (isAdmin) {
-        const currentAdminId = await kv.get(["config", "admin_id"]);
+        const currentAdminId = await kv.get<string>(["config", "admin_id"]);
         if (!currentAdminId.value) await kv.set(["config", "admin_id"], userId);
       }
 
-      let user = await getUser(userId);
-      if (!user) return new Response("ok");
+      // === FIX: Handle language selection even if user doesn't exist yet ===
+      if (data === "lang_en" || data === "lang_ru") {
+        const selectedLang: "en" | "ru" = data === "lang_en" ? "en" : "ru";
 
+        let user = await getUser(userId);
+        if (!user) {
+          user = await createUser(userId, fromUsername, selectedLang);
+          // Daily bonus on first ever login (creation)
+          await updateDailyBonus(userId, user);
+        } else {
+          user.lang = selectedLang;
+          await kv.set(["users", userId], user);
+        }
+
+        await sendMainMenu(userId);
+        await answerCallbackQuery(cbId, selectedLang === "en" ? "English selected 🇬🇧" : "Русский выбран 🇷🇺");
+        return new Response("ok");
+      }
+
+      // For all other callbacks, user must exist
+      const user = await getUser(userId);
+      if (!user) {
+        await answerCallbackQuery(cbId, "Please /start the bot first", true);
+        return new Response("ok");
+      }
+
+      // Daily bonus & activity update
       await updateDailyBonus(userId, user);
       user.last_active = Date.now();
       await kv.set(["users", userId], user);
 
-      if (data === "lang_en" || data === "lang_ru") {
-        user.lang = data === "lang_en" ? "en" : "ru";
-        await kv.set(["users", userId], user);
-        await sendMainMenu(userId);
-        await answerCallbackQuery(cbId, "Language set");
-        return new Response("ok");
-      }
-
+      // Move handling
       if (data.startsWith("move_")) {
         const [, rs, cs] = data.split("_");
         const r = parseInt(rs);
@@ -279,15 +283,15 @@ serve(async (req) => {
 
         const mySymbol = userId === match.players[0] ? match.symbols[0] : match.symbols[1];
         match.board[r][c] = mySymbol;
-        match.current_turn = match.players.find((p: string) => p !== userId);
-        const result = checkWinner(match.board);
+        match.current_turn = match.players.find((p: string) => p !== userId)!;
 
+        const result = checkWinner(match.board);
         match.last_result = result;
         match.last_round = match.round;
 
         if (result) {
           if (result !== "tie") {
-            match.rounds_won[result === mySymbol ? userId : match.current_turn] += 1;
+            (match.rounds_won[result === mySymbol ? userId : match.current_turn] ||= 0) += 1;
           }
 
           if (match.round < 3) {
@@ -297,7 +301,7 @@ serve(async (req) => {
             match.symbols = randStart ? ["X", "O"] : ["O", "X"];
             match.current_turn = randStart ? match.players[0] : match.players[1];
           } else {
-            // Match end logic
+            // Match end
             const rw1 = match.rounds_won[match.players[0]] || 0;
             const rw2 = match.rounds_won[match.players[1]] || 0;
             let winnerId: string | null = null;
@@ -306,15 +310,17 @@ serve(async (req) => {
 
             for (const pid of match.players) {
               const pu = await getUser(pid);
-              pu.matches += 1;
-              if (pid === winnerId) pu.wins += 1;
-              await kv.set(["users", pid], pu);
+              if (pu) {
+                pu.matches += 1;
+                if (pid === winnerId) pu.wins += 1;
+                await kv.set(["users", pid], pu);
+              }
             }
 
             if (winnerId) {
               const loserId = match.players.find((p: string) => p !== winnerId)!;
-              const wu = await getUser(winnerId);
-              const lu = await getUser(loserId);
+              const wu = await getUser(winnerId)!;
+              const lu = await getUser(loserId)!;
               if (match.type === "trophy") {
                 wu.trophies += 1;
                 lu.trophies = Math.max(0, lu.trophies - 1);
@@ -328,8 +334,9 @@ serve(async (req) => {
               await sendMessage(winnerId, await getText(winnerId, match.type === "trophy" ? "match_win_trophy" : "match_win_star"));
               await sendMessage(loserId, await getText(loserId, match.type === "trophy" ? "match_loss_trophy" : "match_loss_star"));
             } else {
-              await sendMessage(match.players[0], await getText(match.players[0], "match_tie"));
-              await sendMessage(match.players[1], await getText(match.players[1], "match_tie"));
+              for (const pid of match.players) {
+                await sendMessage(pid, await getText(pid, "match_tie"));
+              }
             }
 
             await incrementStats("total_matches", 1);
@@ -340,34 +347,32 @@ serve(async (req) => {
               const pu = await getUser(pid);
               if (pu) {
                 pu.current_match = undefined;
+                pu.in_queue = undefined;
                 await kv.set(["users", pid], pu);
               }
               await sendMainMenu(pid);
             }
-            await answerCallbackQuery(cbId, "Match ended");
-            return new Response("ok");
           }
         }
 
         await kv.set(["matches", matchId], match);
         for (const pid of match.players) {
-          await renderAndUpdateBoard(match, pid);
+          await renderBoard(match, pid);
         }
-        await answerCallbackQuery(cbId, "Move accepted");
+        await answerCallbackQuery(cbId);
         return new Response("ok");
       }
 
-      // Menu callbacks
+      // Menu actions
       if (data === "menu_play_trophy" || data === "menu_play_star") {
         const type = data === "menu_play_trophy" ? "trophy" : "star";
         if (user.in_queue === type) {
           await removeFromQueue(userId, type);
           user.in_queue = undefined;
           await kv.set(["users", userId], user);
-          await sendMessage(userId, await getText(userId, "cancel_queue"));
           await sendMainMenu(userId);
         } else if (user.current_match || user.in_queue) {
-          await answerCallbackQuery(cbId, "You are already in a match/queue");
+          await answerCallbackQuery(cbId, "Already in queue/match", true);
         } else {
           await addToQueue(userId, type);
           user.in_queue = type;
@@ -386,7 +391,6 @@ serve(async (req) => {
           await removeFromQueue(userId, type);
           user.in_queue = undefined;
           await kv.set(["users", userId], user);
-          await sendMessage(userId, "Search cancelled");
           await sendMainMenu(userId);
         }
         await answerCallbackQuery(cbId);
@@ -394,8 +398,8 @@ serve(async (req) => {
       }
 
       if (data === "menu_profile") {
-        const profileText = `*Profile*\n🏆 Trophies: ${user.trophies}\n⭐ Stars: ${user.stars.toFixed(1)}\n📊 Matches: ${user.matches} (Wins: ${user.wins})`;
-        await editMessageText(chatId, messageId, profileText, "Markdown");
+        const text = `*Profile*\n🏆 Trophies: ${user.trophies}\n⭐ Stars: ${user.stars.toFixed(1)}\n📊 Matches: ${user.matches} (Wins: ${user.wins})`;
+        await editMessageText(userId, cb.message.message_id, text, "Markdown");
         await answerCallbackQuery(cbId);
         return new Response("ok");
       }
@@ -409,7 +413,7 @@ serve(async (req) => {
           const val = type === "trophies" ? u.trophies : u.stars.toFixed(1);
           text += `\n${i + 1}. ${name} — ${val}`;
         });
-        await editMessageText(chatId, messageId, text || "No players yet", "Markdown");
+        await editMessageText(userId, cb.message.message_id, text || "No players yet", "Markdown");
         await answerCallbackQuery(cbId);
         return new Response("ok");
       }
@@ -420,18 +424,18 @@ serve(async (req) => {
         } else {
           user.state = "waiting_withdraw_amount";
           await kv.set(["users", userId], user);
-          await sendMessage(chatId, await getText(userId, "enter_withdraw_amount"));
-          await answerCallbackQuery(cbId);
+          await sendMessage(userId, await getText(userId, "enter_withdraw_amount"));
         }
+        await answerCallbackQuery(cbId);
         return new Response("ok");
       }
 
-      // Admin callbacks
+      // Admin actions
       if (isAdmin) {
         if (data === "admin_stats") {
           const stats = await getBotStats();
           const text = `*Bot Statistics*\nTotal users: ${stats.totalUsers}\nActive 24h: ${stats.active24h}\nTotal matches: ${stats.totalMatches}\nStars distributed: ${stats.starsDistributed.toFixed(1)}`;
-          await editMessageText(chatId, messageId, text, "Markdown");
+          await editMessageText(userId, cb.message.message_id, text, "Markdown");
           await answerCallbackQuery(cbId);
           return new Response("ok");
         }
@@ -439,18 +443,16 @@ serve(async (req) => {
         if (data === "admin_pending") {
           const pending = (await kv.get<string[]>(["pending_withdrawals"])).value || [];
           if (pending.length === 0) {
-            await editMessageText(chatId, messageId, "No pending withdrawals", "Markdown");
+            await editMessageText(userId, cb.message.message_id, "No pending withdrawals", "Markdown");
           } else {
-            let text = "*Pending Withdrawals*";
+            await editMessageText(userId, cb.message.message_id, "*Pending Withdrawals*", "Markdown");
             for (const reqId of pending) {
               const w = (await kv.get(["withdrawals", reqId])).value;
               if (w) {
                 const u = await getUser(w.userId);
                 const name = u?.username ? `@${u.username}` : w.userId;
-                text += `\n${name} — ${w.amount} ⭐`;
-                const kb = [[{ text: await getText(chatId, "complete_withdraw"), callback_data: `complete_${reqId}` }]];
-                await sendMessage(chatId, text, "Markdown", { inline_keyboard: kb });
-                text = ""; // clear for next
+                const kb = [[{ text: "✅ Complete", callback_data: `complete_${reqId}` }]];
+                await sendMessage(userId, `${name} — ${w.amount} ⭐`, "Markdown", { inline_keyboard: kb });
               }
             }
           }
@@ -460,8 +462,7 @@ serve(async (req) => {
 
         if (data.startsWith("complete_")) {
           const reqId = data.slice(9);
-          const wEntry = await kv.get(["withdrawals", reqId]);
-          const w = wEntry.value;
+          const w = (await kv.get(["withdrawals", reqId])).value;
           if (w) {
             const u = await getUser(w.userId);
             if (u) {
@@ -469,10 +470,9 @@ serve(async (req) => {
               await kv.set(["users", w.userId], u);
               await sendMessage(w.userId, await getText(w.userId, "withdrawal_completed_user", { amount: w.amount.toString() }));
             }
-            // Remove from pending
             const pending = (await kv.get<string[]>(["pending_withdrawals"])).value || [];
             await kv.set(["pending_withdrawals"], pending.filter(id => id !== reqId));
-            await sendMessage(chatId, await getText(chatId, "withdrawal_completed_admin", { user: u?.username || w.userId }));
+            await sendMessage(userId, await getText(userId, "withdrawal_completed_admin", { user: u?.username || w.userId }));
           }
           await answerCallbackQuery(cbId, "Completed");
           return new Response("ok");
@@ -494,16 +494,22 @@ serve(async (req) => {
     const isAdmin = isPrivate && username === ADMIN_USERNAME;
 
     let user = await getUser(userId);
-    if (!user && (text === "/start" || text === "/menu")) {
-      // Language selection on first start
-      const kb = [[
-        { text: MESSAGES.btn_en.en, callback_data: "lang_en" },
-        { text: MESSAGES.btn_ru.ru, callback_data: "lang_ru" },
-      ]];
-      await sendMessage(chatId, await getText(userId, "choose_language"), "Markdown", { inline_keyboard: kb });
+
+    // First /start - language selection
+    if (!user && text === "/start") {
+      const kb = {
+        inline_keyboard: [
+          [
+            { text: "English 🇬🇧", callback_data: "lang_en" },
+            { text: "Русский 🇷🇺", callback_data: "lang_ru" },
+          ],
+        ],
+      };
+      await sendMessage(chatId, MESSAGES.choose_language.en, "Markdown", kb);
       return new Response("ok");
     }
 
+    // User must exist for everything else
     if (!user) return new Response("ok");
 
     await updateDailyBonus(userId, user);
@@ -516,11 +522,13 @@ serve(async (req) => {
     }
 
     if (text === "/admin" && isAdmin) {
-      const kb = [
-        [{ text: await getText(chatId, "admin_stats"), callback_data: "admin_stats" }],
-        [{ text: await getText(chatId, "admin_pending"), callback_data: "admin_pending" }],
-      ];
-      await sendMessage(chatId, await getText(chatId, "admin_panel"), "Markdown", { inline_keyboard: kb });
+      const kb = {
+        inline_keyboard: [
+          [{ text: await getText(chatId, "admin_stats"), callback_data: "admin_stats" }],
+          [{ text: await getText(chatId, "admin_pending"), callback_data: "admin_pending" }],
+        ],
+      };
+      await sendMessage(chatId, await getText(chatId, "admin_panel"), "Markdown", kb);
       return new Response("ok");
     }
 
@@ -528,24 +536,25 @@ serve(async (req) => {
     if (user.state === "waiting_withdraw_amount") {
       const amount = parseFloat(text);
       if (isNaN(amount) || amount < MIN_WITHDRAW || amount > user.stars) {
-        await sendMessage(chatId, "Invalid amount. Try again.");
+        await sendMessage(chatId, "Invalid amount. Try again or cancel with /menu.");
       } else {
-        const reqId = crypto.randomUUID().toString();
+        const reqId = crypto.randomUUID();
         await kv.set(["withdrawals", reqId], { userId, amount, timestamp: Date.now() });
         let pending = (await kv.get<string[]>(["pending_withdrawals"])).value || [];
         pending.push(reqId);
         await kv.set(["pending_withdrawals"], pending);
 
         await sendMessage(chatId, await getText(userId, "withdraw_requested"));
-        const adminId = await kv.get<string>(["config", "admin_id"]);
-        if (adminId.value) {
-          const name = username ? `@${username}` : userId;
+        const adminId = (await kv.get<string>(["config", "admin_id"])).value;
+        if (adminId) {
+          const name = username ? `@${username}` : "User";
           const kb = [[{ text: "✅ Complete", callback_data: `complete_${reqId}` }]];
-          await sendMessage(adminId.value, await getText(adminId.value, "new_withdrawal", { user: name, amount: amount.toString() }), "Markdown", { inline_keyboard: kb });
+          await sendMessage(adminId, await getText(adminId, "new_withdrawal", { user: name, amount: amount.toString() }), "Markdown", kb);
         }
 
         user.state = undefined;
         await kv.set(["users", userId], user);
+        await sendMainMenu(chatId);
       }
       return new Response("ok");
     }
@@ -561,16 +570,24 @@ serve(async (req) => {
 async function sendMainMenu(chatId: string) {
   const user = await getUser(chatId);
   if (!user) return;
-  const kb = [
-    [{ text: await getText(chatId, "play_trophy"), callback_data: "menu_play_trophy" }],
-    [{ text: await getText(chatId, "play_star"), callback_data: "menu_play_star" }],
-    [{ text: await getText(chatId, "profile"), callback_data: "menu_profile" }],
-    [{ text: await getText(chatId, "top_trophies"), callback_data: "menu_leader_trophy" }, { text: await getText(chatId, "top_stars"), callback_data: "menu_leader_star" }],
-  ];
+
+  const kb = {
+    inline_keyboard: [
+      [{ text: await getText(chatId, "play_trophy"), callback_data: "menu_play_trophy" }],
+      [{ text: await getText(chatId, "play_star"), callback_data: "menu_play_star" }],
+      [{ text: await getText(chatId, "profile"), callback_data: "menu_profile" }],
+      [
+        { text: await getText(chatId, "top_trophies"), callback_data: "menu_leader_trophy" },
+        { text: await getText(chatId, "top_stars"), callback_data: "menu_leader_star" },
+      ],
+    ],
+  };
+
   if (user.stars >= MIN_WITHDRAW) {
-    kb.push([{ text: await getText(chatId, "withdraw"), callback_data: "menu_withdraw" }]);
+    kb.inline_keyboard.push([{ text: await getText(chatId, "withdraw"), callback_data: "menu_withdraw" }]);
   }
-  await sendMessage(chatId, await getText(chatId, "main_menu"), "Markdown", { inline_keyboard: kb });
+
+  await sendMessage(chatId, await getText(chatId, "main_menu"), "Markdown", kb);
 }
 
 async function addToQueue(userId: string, type: "trophy" | "star") {
@@ -589,65 +606,60 @@ async function removeFromQueue(userId: string, type: "trophy" | "star") {
 async function tryPairQueue(type: "trophy" | "star") {
   const entry = await kv.get<string[]>(["queue", type]);
   const queue = entry.value || [];
-  if (queue.length >= 2) {
-    const p1 = queue[0];
-    const p2 = queue[1];
-    await kv.set(["queue", type], queue.slice(2));
+  if (queue.length < 2) return;
 
-    // Clear queue state
-    for (const p of [p1, p2]) {
-      const u = await getUser(p);
-      if (u) {
-        u.in_queue = undefined;
-        await kv.set(["users", p], u);
-      }
+  const p1 = queue[0];
+  const p2 = queue[1];
+  await kv.set(["queue", type], queue.slice(2));
+
+  // Clear queue flags
+  for (const p of [p1, p2]) {
+    const u = await getUser(p);
+    if (u) u.in_queue = undefined;
+    await kv.set(["users", p], u!);
+  }
+
+  // Create match
+  const matchId = crypto.randomUUID();
+  const randStart = Math.random() < 0.5;
+  const match = {
+    type,
+    players: [p1, p2],
+    symbols: randStart ? ["X", "O"] : ["O", "X"],
+    current_turn: randStart ? p1 : p2,
+    round: 1,
+    rounds_won: { [p1]: 0, [p2]: 0 },
+    board: Array(3).fill(null).map(() => Array(3).fill(null)),
+    message_ids: {} as Record<string, number>,
+    last_result: null,
+    last_round: 0,
+  };
+  await kv.set(["matches", matchId], match);
+
+  // Set current match
+  for (const p of [p1, p2]) {
+    const u = await getUser(p);
+    if (u) {
+      u.current_match = matchId;
+      await kv.set(["users", p], u);
     }
+    await sendMessage(p, await getText(p, "match_found"));
+  }
 
-    // Create match
-    const matchId = crypto.randomUUID().toString();
-    const randStart = Math.random() < 0.5;
-    const match = {
-      id: matchId,
-      type,
-      players: [p1, p2],
-      symbols: randStart ? ["X", "O"] : ["O", "X"],
-      current_turn: randStart ? p1 : p2,
-      round: 1,
-      rounds_won: { [p1]: 0, [p2]: 0 },
-      board: Array(3).fill(null).map(() => Array(3).fill(null)),
-      message_ids: {} as Record<string, number>,
-      last_result: null,
-      last_round: 0,
-    };
-    await kv.set(["matches", matchId], match);
+  // Send initial boards
+  for (const pid of [p1, p2]) {
+    const oppId = pid === p1 ? p2 : p1;
+    const oppU = await getUser(oppId);
+    const oppName = oppU?.username ? `@${oppU.username}` : "Opponent";
+    const mySym = pid === p1 ? match.symbols[0] : match.symbols[1];
+    const isTurn = pid === match.current_turn;
 
-    // Set current_match
-    for (const p of [p1, p2]) {
-      const u = await getUser(p);
-      if (u) {
-        u.current_match = matchId;
-        await kv.set(["users", p], u);
-      }
-      await sendMessage(p, await getText(p, "match_found"));
-    }
+    const text = `<b>Tic Tac Toe</b>\nVs ${oppName}\nRound 1/3\nYour symbol: ${mySym === "X" ? "❌" : "⭕"}\nScore: 0 - 0\n${isTurn ? "<b>Your turn!</b>" : "Opponent's turn"}`;
 
-    // Send initial boards
-    for (const pid of [p1, p2]) {
-      await renderAndUpdateBoard(match, pid);
-      const sent = await sendMessage(pid, " "); // dummy to get msg id if needed
-      // Actually send the board via render function (it uses edit if exists, but first send)
-      // Initial send
-      const oppId = pid === p1 ? p2 : p1;
-      const oppU = await getUser(oppId);
-      const oppName = oppU?.username ? `@${oppU.username}` : "Opponent";
-      const mySym = pid === p1 ? match.symbols[0] : match.symbols[1];
-      const isTurn = pid === match.current_turn;
-      const text = `<b>Tic Tac Toe</b>\nVs ${oppName}\nRound 1/3\nYour symbol: ${mySym === "X" ? "❌" : "⭕"}\nScore: 0 - 0\n${isTurn ? "<b>Your turn!</b>" : "Opponent's turn"}`;
-      const sentMsg = await sendMessage(pid, text, "HTML", { inline_keyboard: generateKeyboard(match.board) });
-      if (sentMsg) {
-        match.message_ids[pid] = sentMsg.message_id;
-        await kv.set(["matches", matchId], match);
-      }
+    const sent = await sendMessage(pid, text, "HTML", { inline_keyboard: generateKeyboard(match.board) });
+    if (sent) {
+      match.message_ids[pid] = sent.message_id;
+      await kv.set(["matches", matchId], match);
     }
   }
 }
@@ -655,7 +667,7 @@ async function tryPairQueue(type: "trophy" | "star") {
 async function getLeaderboard(type: "trophies" | "stars"): Promise<Array<User & { id: string }>> {
   const users: Array<User & { id: string }> = [];
   for await (const entry of kv.list<User>({ prefix: ["users"] })) {
-    users.push({ id: entry.key[1] as string, ...(entry.value as User) });
+    if (entry.value) users.push({ id: entry.key[1] as string, ...entry.value });
   }
   users.sort((a, b) => (b[type] ?? 0) - (a[type] ?? 0));
   return users.slice(0, 10);
@@ -668,8 +680,7 @@ async function getBotStats() {
   let active24h = 0;
   const now = Date.now();
   for await (const entry of kv.list<User>({ prefix: ["users"] })) {
-    if (entry.value.last_active > now - 86400000) active24h++;
+    if (entry.value?.last_active > now - 86400000) active24h++;
   }
   return { totalUsers, active24h, totalMatches, starsDistributed };
-
 }
