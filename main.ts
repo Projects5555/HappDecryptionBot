@@ -1,15 +1,18 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
 // --- CONFIGURATION ---
+// Configuration constants for the bot
 const TOKEN = Deno.env.get("BOT_TOKEN");
 if (!TOKEN) throw new Error("BOT_TOKEN env var is required");
 const API = `https://api.telegram.org/bot${TOKEN}`;
 const ADMIN_USERNAME = "Masakoff"; // The admin username (without @)
 
 // --- KV DATABASE ---
+// Open Deno KV database for persistent storage
 const kv = await Deno.openKv();
 
 // --- TYPES ---
+// Type definitions for user profiles, matches, queues, and withdrawals
 type Lang = "en" | "ru";
 
 interface UserProfile {
@@ -53,139 +56,140 @@ interface Withdrawal {
 }
 
 // --- LOCALIZATION ---
+// Localized texts with emojis for better user experience
 const texts: Record<Lang, Record<string, string>> = {
   en: {
-    chooseLang: "Choose your language",
+    chooseLang: "🌍 Choose your language",
     english: "🇬🇧 English",
-    russian: "🇷🇺 Russian",
-    welcome: "Welcome! Language selected.",
-    menu: "Main Menu",
-    playTrophy: "Play Trophy Match",
-    playStar: "Play Star Match",
-    profile: "My Profile",
-    leaderboardTrophies: "Leaderboard - Trophies",
-    leaderboardStars: "Leaderboard - Stars",
-    withdraw: "Withdraw Stars",
-    topUp: "Top Up Stars",
-    dailyBonus: "Claim Daily Bonus",
-    adminPanel: "Admin Panel",
-    yourTurn: "Your turn",
-    opponentTurn: "Opponent's turn",
-    youWinRound: "You won the round!",
-    opponentWinRound: "Opponent won the round!",
-    tieRound: "Tie round!",
-    youWinMatch: "You won the match!",
-    youLoseMatch: "You lost the match!",
-    tieMatch: "Match tied!",
-    matchStarted: "Match started against @",
+    russian: "🇷🇺 Русский",
+    welcome: "👋 Welcome! Language selected.",
+    menu: "📋 Main Menu",
+    playTrophy: "🏆 Play Trophy Match",
+    playStar: "⭐ Play Star Match",
+    profile: "👤 My Profile",
+    leaderboardTrophies: "🏅 Leaderboard - Trophies",
+    leaderboardStars: "🌟 Leaderboard - Stars",
+    withdraw: "💸 Withdraw Stars",
+    topUp: "➕ Top Up Stars",
+    dailyBonus: "🎁 Claim Daily Bonus",
+    adminPanel: "🔧 Admin Panel",
+    yourTurn: "🔹 Your turn",
+    opponentTurn: "⏳ Opponent's turn",
+    youWinRound: "🎉 You won the round!",
+    opponentWinRound: "😔 Opponent won the round!",
+    tieRound: "🤝 Tie round!",
+    youWinMatch: "🏆 You won the match!",
+    youLoseMatch: "❌ You lost the match!",
+    tieMatch: "🤝 Match tied!",
+    matchStarted: "⚔️ Match started against @",
     invalidAmount: "❌ Invalid amount. Please enter a number ≥ 1",
-    enterAmount: "Enter the number of stars you want to top up\n\nMinimum: 1 ⭐",
+    enterAmount: "➕ Enter the number of stars you want to top up\n\nMinimum: 1 ⭐",
     paymentSuccess: "✅ Payment successful!\n⭐ ",
     starsAdded: " stars added to your balance",
-    alreadyInMatch: "You are already in a match.",
-    alreadyInQueue: "You are already in the queue.",
-    insufficientStars: "Insufficient stars.",
-    dailyClaimed: "Daily bonus claimed! +1 star",
-    dailyNotReady: "Daily bonus not ready yet. Try again in 24 hours.",
-    profileText: "Your Profile:\n🏆 Trophies: {trophies}\n⭐ Stars: {stars}\n🎮 Matches Played: {matches}\n🏅 Wins: {wins}",
-    leaderboardTrophiesText: "Top 10 by Trophies:\n",
-    leaderboardStarsText: "Top 10 by Stars:\n",
-    accessDenied: "Access denied.",
-    adminMenu: "Admin Panel",
-    adminViewPlayers: "View Player Profiles",
-    adminModifyBalances: "Modify Balances",
-    adminStats: "Bot Statistics",
-    adminWithdrawals: "Pending Withdrawals",
-    enterUser: "Enter user ID or username",
-    userNotFound: "User not found.",
-    adminModifyActions: "Modify for {username}:\nChoose action",
-    addTrophy: "Add Trophies",
-    removeTrophy: "Remove Trophies",
-    addStar: "Add Stars",
-    removeStar: "Remove Stars",
-    enterModifyAmount: "Enter amount to {action}",
-    balanceModified: "Balance modified.",
-    statsText: "Bot Stats:\nTotal Users: {users}\nActive Users (24h): {active}\nTotal Matches: {matches}\nTotal Stars Distributed: {stars}",
-    pendingWithdrawals: "Pending Withdrawals:\n",
-    completeWithdraw: "Complete",
-    withdrawalRequest: "Withdrawal request from @{username} for {amount} stars",
-    withdrawalCompleted: "Withdrawal completed for {amount} stars",
-    withdrawalInsufficient: "Insufficient stars for withdrawal.",
-    withdrawalMin: "Minimum withdrawal is 50 stars.",
-    withdrawalPending: "You already have a pending withdrawal.",
-    withdrawalSuccess: "Withdrawal request sent. Waiting for admin approval.",
+    alreadyInMatch: "🚫 You are already in a match.",
+    alreadyInQueue: "⏳ You are already in the queue.",
+    insufficientStars: "⚠️ Insufficient stars.",
+    dailyClaimed: "🎁 Daily bonus claimed! +1 star",
+    dailyNotReady: "⏰ Daily bonus not ready yet. Try again in 24 hours.",
+    profileText: "👤 Your Profile:\n🏆 Trophies: {trophies}\n⭐ Stars: {stars}\n🎮 Matches Played: {matches}\n🏅 Wins: {wins}",
+    leaderboardTrophiesText: "🏅 Top 10 by Trophies:\n",
+    leaderboardStarsText: "🌟 Top 10 by Stars:\n",
+    accessDenied: "🚫 Access denied.",
+    adminMenu: "🔧 Admin Panel",
+    adminViewPlayers: "👥 View Player Profiles",
+    adminModifyBalances: "⚖️ Modify Balances",
+    adminStats: "📊 Bot Statistics",
+    adminWithdrawals: "💸 Pending Withdrawals",
+    enterUser: "🔍 Enter user ID or username",
+    userNotFound: "❓ User not found.",
+    adminModifyActions: "⚖️ Modify for {username}:\nChoose action",
+    addTrophy: "➕ Add Trophies",
+    removeTrophy: "➖ Remove Trophies",
+    addStar: "➕ Add Stars",
+    removeStar: "➖ Remove Stars",
+    enterModifyAmount: "🔢 Enter amount to {action}",
+    balanceModified: "✅ Balance modified.",
+    statsText: "📊 Bot Stats:\n👥 Total Users: {users}\n🟢 Active Users (24h): {active}\n🎮 Total Matches: {matches}\n🌟 Total Stars Distributed: {stars}",
+    pendingWithdrawals: "💸 Pending Withdrawals:\n",
+    completeWithdraw: "✅ Complete",
+    withdrawalRequest: "💸 Withdrawal request from @{username} for {amount} stars",
+    withdrawalCompleted: "✅ Withdrawal completed for {amount} stars",
+    withdrawalInsufficient: "⚠️ Insufficient stars for withdrawal.",
+    withdrawalMin: "⚠️ Minimum withdrawal is 50 stars.",
+    withdrawalPending: "⏳ You already have a pending withdrawal.",
+    withdrawalSuccess: "✅ Withdrawal request sent. Waiting for admin approval.",
   },
   ru: {
-    chooseLang: "Выберите язык",
+    chooseLang: "🌍 Выберите язык",
     english: "🇬🇧 Английский",
     russian: "🇷🇺 Русский",
-    welcome: "Добро пожаловать! Язык выбран.",
-    menu: "Главное меню",
-    playTrophy: "Играть в матч за трофеи",
-    playStar: "Играть в матч за звезды",
-    profile: "Мой профиль",
-    leaderboardTrophies: "Лидерборд - Трофеи",
-    leaderboardStars: "Лидерборд - Звезды",
-    withdraw: "Вывести звезды",
-    topUp: "Пополнить звезды",
-    dailyBonus: "Забрать ежедневный бонус",
-    adminPanel: "Панель админа",
-    yourTurn: "Ваш ход",
-    opponentTurn: "Ход对手ника",
-    youWinRound: "Вы выиграли раунд!",
-    opponentWinRound: "Оппонент выиграл раунд!",
-    tieRound: "Ничья в раунде!",
-    youWinMatch: "Вы выиграли матч!",
-    youLoseMatch: "Вы проиграли матч!",
-    tieMatch: "Матч ничья!",
-    matchStarted: "Матч начался против @",
+    welcome: "👋 Добро пожаловать! Язык выбран.",
+    menu: "📋 Главное меню",
+    playTrophy: "🏆 Играть в матч за трофеи",
+    playStar: "⭐ Играть в матч за звезды",
+    profile: "👤 Мой профиль",
+    leaderboardTrophies: "🏅 Лидерборд - Трофеи",
+    leaderboardStars: "🌟 Лидерборд - Звезды",
+    withdraw: "💸 Вывести звезды",
+    topUp: "➕ Пополнить звезды",
+    dailyBonus: "🎁 Забрать ежедневный бонус",
+    adminPanel: "🔧 Панель админа",
+    yourTurn: "🔹 Ваш ход",
+    opponentTurn: "⏳ Ход оппонента",
+    youWinRound: "🎉 Вы выиграли раунд!",
+    opponentWinRound: "😔 Оппонент выиграл раунд!",
+    tieRound: "🤝 Ничья в раунде!",
+    youWinMatch: "🏆 Вы выиграли матч!",
+    youLoseMatch: "❌ Вы проиграли матч!",
+    tieMatch: "🤝 Матч ничья!",
+    matchStarted: "⚔️ Матч начался против @",
     invalidAmount: "❌ Неверная сумма. Введите число ≥ 1",
-    enterAmount: "Введите количество звезд для пополнения\n\nМинимум: 1 ⭐",
+    enterAmount: "➕ Введите количество звезд для пополнения\n\nМинимум: 1 ⭐",
     paymentSuccess: "✅ Оплата успешна!\n⭐ ",
     starsAdded: " звезд добавлено на баланс",
-    alreadyInMatch: "Вы уже в матче.",
-    alreadyInQueue: "Вы уже в очереди.",
-    insufficientStars: "Недостаточно звезд.",
-    dailyClaimed: "Ежедневный бонус получен! +1 звезда",
-    dailyNotReady: "Ежедневный бонус еще не готов. Попробуйте через 24 часа.",
-    profileText: "Ваш профиль:\n🏆 Трофеи: {trophies}\n⭐ Звезды: {stars}\n🎮 Матчей сыграно: {matches}\n🏅 Побед: {wins}",
-    leaderboardTrophiesText: "Топ 10 по трофеям:\n",
-    leaderboardStarsText: "Топ 10 по звездам:\n",
-    accessDenied: "Доступ запрещен.",
-    adminMenu: "Панель админа",
-    adminViewPlayers: "Просмотр профилей игроков",
-    adminModifyBalances: "Изменить балансы",
-    adminStats: "Статистика бота",
-    adminWithdrawals: "Ожидающие выводы",
-    enterUser: "Введите ID или username пользователя",
-    userNotFound: "Пользователь не найден.",
-    adminModifyActions: "Изменить для {username}:\nВыберите действие",
-    addTrophy: "Добавить трофеи",
-    removeTrophy: "Убрать трофеи",
-    addStar: "Добавить звезды",
-    removeStar: "Убрать звезды",
-    enterModifyAmount: "Введите сумму для {action}",
-    balanceModified: "Баланс изменен.",
-    statsText: "Статистика бота:\nВсего пользователей: {users}\nАктивных (24ч): {active}\nВсего матчей: {matches}\nВсего звезд распределено: {stars}",
-    pendingWithdrawals: "Ожидающие выводы:\n",
-    completeWithdraw: "Завершить",
-    withdrawalRequest: "Запрос на вывод от @{username} на {amount} звезд",
-    withdrawalCompleted: "Вывод завершен на {amount} звезд",
-    withdrawalInsufficient: "Недостаточно звезд для вывода.",
-    withdrawalMin: "Минимальный вывод 50 звезд.",
-    withdrawalPending: "У вас уже есть ожидающий вывод.",
-    withdrawalSuccess: "Запрос на вывод отправлен. Ожидайте одобрения админа.",
+    alreadyInMatch: "🚫 Вы уже в матче.",
+    alreadyInQueue: "⏳ Вы уже в очереди.",
+    insufficientStars: "⚠️ Недостаточно звезд.",
+    dailyClaimed: "🎁 Ежедневный бонус получен! +1 звезда",
+    dailyNotReady: "⏰ Ежедневный бонус еще не готов. Попробуйте через 24 часа.",
+    profileText: "👤 Ваш профиль:\n🏆 Трофеи: {trophies}\n⭐ Звезды: {stars}\n🎮 Матчей сыграно: {matches}\n🏅 Побед: {wins}",
+    leaderboardTrophiesText: "🏅 Топ 10 по трофеям:\n",
+    leaderboardStarsText: "🌟 Топ 10 по звездам:\n",
+    accessDenied: "🚫 Доступ запрещен.",
+    adminMenu: "🔧 Панель админа",
+    adminViewPlayers: "👥 Просмотр профилей игроков",
+    adminModifyBalances: "⚖️ Изменить балансы",
+    adminStats: "📊 Статистика бота",
+    adminWithdrawals: "💸 Ожидающие выводы",
+    enterUser: "🔍 Введите ID или username пользователя",
+    userNotFound: "❓ Пользователь не найден.",
+    adminModifyActions: "⚖️ Изменить для {username}:\nВыберите действие",
+    addTrophy: "➕ Добавить трофеи",
+    removeTrophy: "➖ Убрать трофеи",
+    addStar: "➕ Добавить звезды",
+    removeStar: "➖ Убрать звезды",
+    enterModifyAmount: "🔢 Введите сумму для {action}",
+    balanceModified: "✅ Баланс изменен.",
+    statsText: "📊 Статистика бота:\n👥 Всего пользователей: {users}\n🟢 Активных (24ч): {active}\n🎮 Всего матчей: {matches}\n🌟 Всего звезд распределено: {stars}",
+    pendingWithdrawals: "💸 Ожидающие выводы:\n",
+    completeWithdraw: "✅ Завершить",
+    withdrawalRequest: "💸 Запрос на вывод от @{username} на {amount} звезд",
+    withdrawalCompleted: "✅ Вывод завершен на {amount} звезд",
+    withdrawalInsufficient: "⚠️ Недостаточно звезд для вывода.",
+    withdrawalMin: "⚠️ Минимальный вывод 50 звезд.",
+    withdrawalPending: "⏳ У вас уже есть ожидающий вывод.",
+    withdrawalSuccess: "✅ Запрос на вывод отправлен. Ожидайте одобрения админа.",
   },
 };
 
 // --- HELPER FUNCTIONS ---
-// Get text based on language
+// Function to get localized text with optional parameters
 function getText(lang: Lang | null, key: string, params: Record<string, any> = {}): string {
   const base = texts[lang || "en"][key] || texts["en"][key];
   return Object.entries(params).reduce((txt, [k, v]) => txt.replace(`{${k}}`, v), base);
 }
 
-// Send text message
+// Function to send a text message to a chat
 async function sendText(chatId: number, text: string) {
   await fetch(`${API}/sendMessage`, {
     method: "POST",
@@ -194,7 +198,7 @@ async function sendText(chatId: number, text: string) {
   });
 }
 
-// Send message with keyboard
+// Function to send a message with inline keyboard and return message ID
 async function sendTextWithKeyboard(chatId: number, text: string, reply_markup: any): Promise<number> {
   const res = await fetch(`${API}/sendMessage`, {
     method: "POST",
@@ -205,7 +209,7 @@ async function sendTextWithKeyboard(chatId: number, text: string, reply_markup: 
   return data.result.message_id;
 }
 
-// Edit message text and keyboard
+// Function to edit a message's text and keyboard
 async function editText(chatId: number, msgId: number, text: string, reply_markup?: any) {
   await fetch(`${API}/editMessageText`, {
     method: "POST",
@@ -214,7 +218,7 @@ async function editText(chatId: number, msgId: number, text: string, reply_marku
   });
 }
 
-// Answer callback query
+// Function to answer a callback query
 async function answerCallback(id: string, text?: string) {
   await fetch(`${API}/answerCallbackQuery`, {
     method: "POST",
@@ -223,7 +227,7 @@ async function answerCallback(id: string, text?: string) {
   });
 }
 
-// Get user profile from KV
+// Function to retrieve user profile from KV
 async function getUserProfile(id: number): Promise<UserProfile> {
   const res = await kv.get<UserProfile>(["users", id]);
   return res.value || {
@@ -240,18 +244,18 @@ async function getUserProfile(id: number): Promise<UserProfile> {
   };
 }
 
-// Save user profile to KV
+// Function to save user profile to KV
 async function saveUserProfile(profile: UserProfile) {
   await kv.set(["users", profile.id], profile);
 }
 
-// Get state for user
+// Function to get user state from KV
 async function getState(userId: number): Promise<string | null> {
   const res = await kv.get<string>(["states", userId]);
   return res.value;
 }
 
-// Set state for user
+// Function to set or delete user state in KV
 async function setState(userId: number, state: string | null) {
   if (state === null) {
     await kv.delete(["states", userId]);
@@ -260,7 +264,7 @@ async function setState(userId: number, state: string | null) {
   }
 }
 
-// Send main menu
+// Function to send the main menu with buttons
 async function sendMenu(chatId: number, lang: Lang, isAdmin: boolean = false) {
   const kb = [
     [{ text: getText(lang, "playTrophy"), callback_data: "play_trophy" }],
@@ -278,7 +282,8 @@ async function sendMenu(chatId: number, lang: Lang, isAdmin: boolean = false) {
   await sendTextWithKeyboard(chatId, getText(lang, "menu"), { inline_keyboard: kb });
 }
 
-// Handle /start command
+// --- COMMAND HANDLERS ---
+// Handler for /start command: initializes user and prompts for language if needed
 async function handleStart(msg: any) {
   const user = msg.from;
   const chatId = msg.chat.id;
@@ -302,27 +307,28 @@ async function handleStart(msg: any) {
   await sendTextWithKeyboard(chatId, getText("en", "chooseLang"), kb);
 }
 
-// Check if user is in active match
+// --- GAME LOGIC ---
+// Function to check if user is in an active match
 async function isInActiveMatch(userId: number): Promise<boolean> {
   const res = await kv.get(["active_matches", userId]);
   return !!res.value;
 }
 
-// Get queue
+// Function to get matchmaking queue for a type
 async function getQueue(type: "trophy" | "star"): Promise<QueueEntry[]> {
   const res = await kv.get<QueueEntry[]>(["queues", type]);
   return res.value || [];
 }
 
-// Save queue
+// Function to save matchmaking queue
 async function saveQueue(type: "trophy" | "star", queue: QueueEntry[]) {
   await kv.set(["queues", type], queue);
 }
 
-// Handle joining queue
+// Handler to join matchmaking queue
 async function handleJoinQueue(userId: number, lang: Lang, type: "trophy" | "star") {
   if (await isInActiveMatch(userId)) {
-    await answerCallback("", getText(lang, "alreadyInMatch")); // Need id, but in context
+    await answerCallback("", getText(lang, "alreadyInMatch"));
     return;
   }
   let queue = await getQueue(type);
@@ -350,7 +356,7 @@ async function handleJoinQueue(userId: number, lang: Lang, type: "trophy" | "sta
   }
 }
 
-// Start a new match
+// Function to start a new match between two players
 async function startMatch(p1: number, p2: number, type: "trophy" | "star") {
   const matchId = crypto.randomUUID();
   const match: Match = {
@@ -391,17 +397,17 @@ async function startMatch(p1: number, p2: number, type: "trophy" | "star") {
   await kv.set(["matches", matchId], match);
 }
 
-// Get board text for player
+// Function to get board text for a player
 async function getBoardText(userId: number, match: Match): Promise<string> {
   const profile = await getUserProfile(userId);
   const lang = profile.language || "en";
-  const round = `Round ${match.rounds}\n`;
+  const round = `🔢 Round ${match.rounds}\n`;
   const mark = userId === match.p1 ? "X" : "O";
   const turn = match.turn === userId ? getText(lang, "yourTurn") : getText(lang, "opponentTurn");
-  return round + `Your mark: ${mark}\n${turn}`;
+  return round + `🔸 Your mark: ${mark}\n${turn}`;
 }
 
-// Get board keyboard
+// Function to generate inline keyboard for the board
 function getBoardKeyboard(match: Match): any {
   const kb = [];
   for (let row = 0; row < 3; row++) {
@@ -417,7 +423,7 @@ function getBoardKeyboard(match: Match): any {
   return { inline_keyboard: kb };
 }
 
-// Handle move
+// Handler for player moves in the game
 async function handleMove(cb: any, match: Match) {
   const userId = cb.from.id;
   const [_, __, rowStr, colStr] = cb.data.split(":");
@@ -474,7 +480,7 @@ async function handleMove(cb: any, match: Match) {
   }
 }
 
-// Check for win
+// Function to check for a win on the board
 function checkWin(board: string[]): string | null {
   const lines = [
     [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -489,7 +495,7 @@ function checkWin(board: string[]): string | null {
   return null;
 }
 
-// End match
+// Function to end a match and update profiles/stats
 async function endMatch(match: Match) {
   match.active = false;
   await kv.set(["matches", match.id], match);
@@ -528,15 +534,17 @@ async function endMatch(match: Match) {
     } else {
       winnerProfile.stars += 1.5;
       // Total stars distributed += 0.5
-      const stats = await kv.get<{ totalStarsDistributed: number }>(["stats"]) || { value: { totalStarsDistributed: 0 } };
+      let stats = await kv.get<{ totalStarsDistributed: number, totalMatches: number }>(["stats"]);
+      if (!stats.value) stats.value = { totalStarsDistributed: 0, totalMatches: 0 };
       stats.value.totalStarsDistributed += 0.5;
       await kv.set(["stats"], stats.value);
     }
   }
 
   // Update total matches
-  const stats = await kv.get<{ totalMatches: number }>(["stats"]) || { value: { totalMatches: 0 } };
-  stats.value.totalMatches = (stats.value.totalMatches || 0) + 1;
+  let stats = await kv.get<{ totalStarsDistributed: number, totalMatches: number }>(["stats"]);
+  if (!stats.value) stats.value = { totalStarsDistributed: 0, totalMatches: 0 };
+  stats.value.totalMatches += 1;
   await kv.set(["stats"], stats.value);
 
   await saveUserProfile(p1Profile);
@@ -546,7 +554,8 @@ async function endMatch(match: Match) {
   await sendText(match.p2, getText(p2Profile.language || "en", statusKeyP2));
 }
 
-// Create invoice for top up
+// --- TOP-UP LOGIC ---
+// Function to create Telegram Stars invoice
 async function createInvoice(chatId: number, userId: number, amount: number) {
   const payload = JSON.stringify({ userId, amount, id: crypto.randomUUID() });
   await fetch(`${API}/sendInvoice`, {
@@ -563,7 +572,8 @@ async function createInvoice(chatId: number, userId: number, amount: number) {
   });
 }
 
-// Send profile
+// --- PROFILE AND LEADERBOARD ---
+// Function to send user profile
 async function sendProfile(chatId: number, profile: UserProfile) {
   const text = getText(profile.language || "en", "profileText", {
     trophies: profile.trophies,
@@ -574,7 +584,7 @@ async function sendProfile(chatId: number, profile: UserProfile) {
   await sendText(chatId, text);
 }
 
-// Send leaderboard
+// Function to send leaderboard
 async function sendLeaderboard(chatId: number, lang: Lang, type: "trophies" | "stars") {
   const users: UserProfile[] = [];
   for await (const entry of kv.list({ prefix: ["users"] })) {
@@ -589,7 +599,8 @@ async function sendLeaderboard(chatId: number, lang: Lang, type: "trophies" | "s
   await sendText(chatId, text);
 }
 
-// Handle daily bonus
+// --- DAILY BONUS ---
+// Handler for daily bonus claim
 async function handleDaily(userId: number, lang: Lang) {
   const profile = await getUserProfile(userId);
   const now = Date.now();
@@ -603,7 +614,8 @@ async function handleDaily(userId: number, lang: Lang) {
   await answerCallback("", getText(lang, "dailyClaimed"));
 }
 
-// Handle withdraw
+// --- WITHDRAWAL LOGIC ---
+// Handler for star withdrawal
 async function handleWithdraw(userId: number, lang: Lang) {
   const profile = await getUserProfile(userId);
   if (profile.stars < 50) {
@@ -617,13 +629,10 @@ async function handleWithdraw(userId: number, lang: Lang) {
   }
   const withdrawal: Withdrawal = {
     userId,
-    amount: profile.stars, // Spec min 50, but assumes all? Wait, spec "User clicks Withdraw Minimum withdrawal: 50 stars"
-    // But no specify amount, assume all if >=50, but to match, perhaps fixed min, but user has amount.
-    // Spec "Amount" but no input, assume withdraw all if >=50
+    amount: profile.stars, // Withdraw all if >=50
     timestamp: Date.now(),
     completed: false,
   };
-  if (withdrawal.amount < 50) return;
   await kv.set(["withdrawals", userId], withdrawal);
 
   const adminIdRes = await kv.get<number>(["admin_id"]);
@@ -637,7 +646,8 @@ async function handleWithdraw(userId: number, lang: Lang) {
   await answerCallback("", getText(lang, "withdrawalSuccess"));
 }
 
-// Find user by id or username
+// --- ADMIN LOGIC ---
+// Function to find user by ID or username
 async function findUser(query: string): Promise<UserProfile | null> {
   if (!isNaN(parseInt(query))) {
     return await getUserProfile(parseInt(query));
@@ -649,7 +659,7 @@ async function findUser(query: string): Promise<UserProfile | null> {
   return null;
 }
 
-// Send admin menu
+// Function to send admin menu
 async function sendAdminMenu(chatId: number, lang: Lang) {
   const kb = [
     [{ text: getText(lang, "adminViewPlayers"), callback_data: "admin_view" }],
@@ -660,18 +670,13 @@ async function sendAdminMenu(chatId: number, lang: Lang) {
   await sendTextWithKeyboard(chatId, getText(lang, "adminMenu"), { inline_keyboard: kb });
 }
 
-// Handle admin stats
+// Handler for admin stats
 async function handleAdminStats(chatId: number, lang: Lang) {
   let totalUsers = 0;
   let activeUsers = 0;
   const now = Date.now();
-  for await (const _ of kv.list({ prefix: ["users"] })) {
-    totalUsers++;
-    // To count active, need value
-    // Approximate, or full iterate
-  }
-  // Full for active
   for await (const entry of kv.list({ prefix: ["users"] })) {
+    totalUsers++;
     if ((entry.value as UserProfile).lastActive > now - 24 * 3600 * 1000) activeUsers++;
   }
   const stats = await kv.get<{ totalMatches: number; totalStarsDistributed: number }>(["stats"]) || { value: { totalMatches: 0, totalStarsDistributed: 0 } };
@@ -684,27 +689,29 @@ async function handleAdminStats(chatId: number, lang: Lang) {
   await sendText(chatId, text);
 }
 
-// Handle pending withdrawals for admin
+// Handler for admin pending withdrawals
 async function handleAdminPending(chatId: number, lang: Lang) {
   let text = getText(lang, "pendingWithdrawals");
+  let hasPending = false;
   for await (const entry of kv.list({ prefix: ["withdrawals"] })) {
     const w = entry.value as Withdrawal;
     if (!w.completed) {
+      hasPending = true;
       const profile = await getUserProfile(w.userId);
       text += `@${profile.username} - ${w.amount} stars\n`;
       const kb = {
         inline_keyboard: [[{ text: getText(lang, "completeWithdraw"), callback_data: `complete_withdraw:${w.userId}` }]],
       };
       await sendTextWithKeyboard(chatId, text, kb);
-      text = ""; // Send separate? But for list, perhaps one message with multiple buttons, but simple send per
+      text = ""; // Reset for next
     }
   }
-  if (text === getText(lang, "pendingWithdrawals")) {
+  if (!hasPending) {
     await sendText(chatId, "No pending withdrawals.");
   }
 }
 
-// Complete withdrawal
+// Function to complete a withdrawal
 async function completeWithdrawal(userId: number) {
   const withdrawalRes = await kv.get<Withdrawal>(["withdrawals", userId]);
   if (!withdrawalRes.value || withdrawalRes.value.completed) return;
@@ -722,7 +729,8 @@ async function completeWithdrawal(userId: number) {
   await answerCallback("", "Completed");
 }
 
-// --- MAIN HANDLER ---
+// --- MAIN UPDATE HANDLER ---
+// Main function to handle incoming updates from Telegram
 async function handleUpdate(update: any) {
   if (update.message) {
     const msg = update.message;
@@ -837,7 +845,7 @@ async function handleUpdate(update: any) {
       return;
     }
 
-    if (!profile.language) return; // Ignore if no lang
+    if (!profile.language) return;
 
     if (data === "play_trophy") {
       await handleJoinQueue(user.id, lang, "trophy");
@@ -937,6 +945,7 @@ async function handleUpdate(update: any) {
 }
 
 // --- SERVER ---
+// Start the HTTP server to handle webhooks
 serve(async (req) => {
   if (req.method === "POST") {
     const update = await req.json();
