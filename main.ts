@@ -12,7 +12,7 @@ const ADMIN_USERNAME = "Masakoff"; // The admin username (without @)
 const kv = await Deno.openKv();
 
 // --- TYPES ---
-// Type definitions for user profiles, matches, queues, and withdrawals
+// Type definitions for user profiles, matches, queues, withdrawals, and payments
 type Lang = "en" | "ru";
 
 interface UserProfile {
@@ -24,6 +24,7 @@ interface UserProfile {
   stars: number;
   matchesPlayed: number;
   wins: number;
+  losses: number;
   lastDailyBonus: number; // timestamp
   lastActive: number;
 }
@@ -41,6 +42,7 @@ interface Match {
   wins: { [userId: number]: number }; // Round wins
   msgIds: { [userId: number]: number }; // To edit messages
   active: boolean;
+  lastMoveTime: number;
 }
 
 interface QueueEntry {
@@ -53,6 +55,19 @@ interface Withdrawal {
   amount: number;
   timestamp: number;
   completed: boolean;
+}
+
+interface Payment {
+  id: string;
+  userId: number;
+  amount: number;
+  timestamp: number;
+}
+
+interface Stats {
+  totalMatches: number;
+  totalStarsDistributed: number;
+  totalStarsPurchased: number;
 }
 
 // --- LOCALIZATION ---
@@ -89,9 +104,10 @@ const texts: Record<Lang, Record<string, string>> = {
     alreadyInMatch: "🚫 You are already in a match.",
     alreadyInQueue: "⏳ You are already in the queue.",
     insufficientStars: "⚠️ Insufficient stars.",
-    dailyClaimed: "🎁 Daily bonus claimed! +1 star",
+    dailyClaimedStar: "🎁 Daily bonus claimed! +1 star",
+    dailyClaimedTrophy: "🎁 Daily bonus claimed! +1 trophy",
     dailyNotReady: "⏰ Daily bonus not ready yet. Try again in 24 hours.",
-    profileText: "👤 Your Profile:\n🏆 Trophies: {trophies}\n⭐ Stars: {stars}\n🎮 Matches Played: {matches}\n🏅 Wins: {wins}",
+    profileText: "👤 Your Profile:\n🏆 Trophies: {trophies}\n⭐ Stars: {stars}\n🎮 Matches Played: {matches}\n🏅 Wins / Losses: {wins}/{losses}",
     leaderboardTrophiesText: "🏅 Top 10 by Trophies:\n",
     leaderboardStarsText: "🌟 Top 10 by Stars:\n",
     accessDenied: "🚫 Access denied.",
@@ -100,6 +116,7 @@ const texts: Record<Lang, Record<string, string>> = {
     adminModifyBalances: "⚖️ Modify Balances",
     adminStats: "📊 Bot Statistics",
     adminWithdrawals: "💸 Pending Withdrawals",
+    adminPayments: "📜 Payment History",
     enterUser: "🔍 Enter user ID or username",
     userNotFound: "❓ User not found.",
     adminModifyActions: "⚖️ Modify for {username}:\nChoose action",
@@ -109,7 +126,7 @@ const texts: Record<Lang, Record<string, string>> = {
     removeStar: "➖ Remove Stars",
     enterModifyAmount: "🔢 Enter amount to {action}",
     balanceModified: "✅ Balance modified.",
-    statsText: "📊 Bot Stats:\n👥 Total Users: {users}\n🟢 Active Users (24h): {active}\n🎮 Total Matches: {matches}\n🌟 Total Stars Distributed: {stars}",
+    statsText: "📊 Bot Stats:\n👥 Total Users: {users}\n🟢 Active Users (24h): {active}\n🎮 Total Matches: {matches}\n🌟 Total Stars Distributed: {stars}\n💰 Total Stars Purchased: {purchased}",
     pendingWithdrawals: "💸 Pending Withdrawals:\n",
     completeWithdraw: "✅ Complete",
     withdrawalRequest: "💸 Withdrawal request from @{username} for {amount} stars",
@@ -118,6 +135,8 @@ const texts: Record<Lang, Record<string, string>> = {
     withdrawalMin: "⚠️ Minimum withdrawal is 50 stars.",
     withdrawalPending: "⏳ You already have a pending withdrawal.",
     withdrawalSuccess: "✅ Withdrawal request sent. Waiting for admin approval.",
+    enterWithdrawAmount: "💸 Enter the number of stars to withdraw\n\nMinimum: 50 ⭐\nYou have {stars} ⭐",
+    invalidWithdrawAmount: "❌ Invalid amount. Please enter a number ≥ 50 and ≤ your balance",
   },
   ru: {
     chooseLang: "🌍 Выберите язык",
@@ -150,9 +169,10 @@ const texts: Record<Lang, Record<string, string>> = {
     alreadyInMatch: "🚫 Вы уже в матче.",
     alreadyInQueue: "⏳ Вы уже в очереди.",
     insufficientStars: "⚠️ Недостаточно звезд.",
-    dailyClaimed: "🎁 Ежедневный бонус получен! +1 звезда",
+    dailyClaimedStar: "🎁 Ежедневный бонус получен! +1 звезда",
+    dailyClaimedTrophy: "🎁 Ежедневный бонус получен! +1 трофей",
     dailyNotReady: "⏰ Ежедневный бонус еще не готов. Попробуйте через 24 часа.",
-    profileText: "👤 Ваш профиль:\n🏆 Трофеи: {trophies}\n⭐ Звезды: {stars}\n🎮 Матчей сыграно: {matches}\n🏅 Побед: {wins}",
+    profileText: "👤 Ваш профиль:\n🏆 Трофеи: {trophies}\n⭐ Звезды: {stars}\n🎮 Матчей сыграно: {matches}\n🏅 Побед / Поражений: {wins}/{losses}",
     leaderboardTrophiesText: "🏅 Топ 10 по трофеям:\n",
     leaderboardStarsText: "🌟 Топ 10 по звездам:\n",
     accessDenied: "🚫 Доступ запрещен.",
@@ -161,6 +181,7 @@ const texts: Record<Lang, Record<string, string>> = {
     adminModifyBalances: "⚖️ Изменить балансы",
     adminStats: "📊 Статистика бота",
     adminWithdrawals: "💸 Ожидающие выводы",
+    adminPayments: "📜 История платежей",
     enterUser: "🔍 Введите ID или username пользователя",
     userNotFound: "❓ Пользователь не найден.",
     adminModifyActions: "⚖️ Изменить для {username}:\nВыберите действие",
@@ -170,7 +191,7 @@ const texts: Record<Lang, Record<string, string>> = {
     removeStar: "➖ Убрать звезды",
     enterModifyAmount: "🔢 Введите сумму для {action}",
     balanceModified: "✅ Баланс изменен.",
-    statsText: "📊 Статистика бота:\n👥 Всего пользователей: {users}\n🟢 Активных (24ч): {active}\n🎮 Всего матчей: {matches}\n🌟 Всего звезд распределено: {stars}",
+    statsText: "📊 Статистика бота:\n👥 Всего пользователей: {users}\n🟢 Активных (24ч): {active}\n🎮 Всего матчей: {matches}\n🌟 Всего звезд распределено: {stars}\n💰 Всего звезд куплено: {purchased}",
     pendingWithdrawals: "💸 Ожидающие выводы:\n",
     completeWithdraw: "✅ Завершить",
     withdrawalRequest: "💸 Запрос на вывод от @{username} на {amount} звезд",
@@ -179,6 +200,8 @@ const texts: Record<Lang, Record<string, string>> = {
     withdrawalMin: "⚠️ Минимальный вывод 50 звезд.",
     withdrawalPending: "⏳ У вас уже есть ожидающий вывод.",
     withdrawalSuccess: "✅ Запрос на вывод отправлен. Ожидайте одобрения админа.",
+    enterWithdrawAmount: "💸 Введите количество звезд для вывода\n\nМинимум: 50 ⭐\nУ вас {stars} ⭐",
+    invalidWithdrawAmount: "❌ Неверная сумма. Введите число ≥ 50 и ≤ вашему балансу",
   },
 };
 
@@ -239,6 +262,7 @@ async function getUserProfile(id: number): Promise<UserProfile> {
     stars: 0,
     matchesPlayed: 0,
     wins: 0,
+    losses: 0,
     lastDailyBonus: 0,
     lastActive: Date.now(),
   };
@@ -326,20 +350,20 @@ async function saveQueue(type: "trophy" | "star", queue: QueueEntry[]) {
 }
 
 // Handler to join matchmaking queue
-async function handleJoinQueue(userId: number, lang: Lang, type: "trophy" | "star") {
+async function handleJoinQueue(userId: number, lang: Lang, type: "trophy" | "star", cbId: string) {
   if (await isInActiveMatch(userId)) {
-    await answerCallback("", getText(lang, "alreadyInMatch"));
+    await answerCallback(cbId, getText(lang, "alreadyInMatch"));
     return;
   }
   let queue = await getQueue(type);
   if (queue.some((e) => e.userId === userId)) {
-    await answerCallback("", getText(lang, "alreadyInQueue"));
+    await answerCallback(cbId, getText(lang, "alreadyInQueue"));
     return;
   }
   if (type === "star") {
     const profile = await getUserProfile(userId);
     if (profile.stars < 1) {
-      await answerCallback("", getText(lang, "insufficientStars"));
+      await answerCallback(cbId, getText(lang, "insufficientStars"));
       return;
     }
   }
@@ -354,11 +378,13 @@ async function handleJoinQueue(userId: number, lang: Lang, type: "trophy" | "sta
       await startMatch(p1, p2, type);
     }
   }
+  await answerCallback(cbId, "Joined queue");
 }
 
 // Function to start a new match between two players
 async function startMatch(p1: number, p2: number, type: "trophy" | "star") {
   const matchId = crypto.randomUUID();
+  const now = Date.now();
   const match: Match = {
     id: matchId,
     p1,
@@ -372,6 +398,7 @@ async function startMatch(p1: number, p2: number, type: "trophy" | "star") {
     wins: { [p1]: 0, [p2]: 0 },
     msgIds: {},
     active: true,
+    lastMoveTime: now,
   };
   await kv.set(["matches", matchId], match);
   await kv.set(["active_matches", p1], matchId);
@@ -390,8 +417,8 @@ async function startMatch(p1: number, p2: number, type: "trophy" | "star") {
   await sendText(p1, getText(p1Profile.language || "en", "matchStarted") + p2Profile.username);
   await sendText(p2, getText(p2Profile.language || "en", "matchStarted") + p1Profile.username);
 
-  const boardMsgP1 = await sendTextWithKeyboard(p1, await getBoardText(p1, match), await getBoardKeyboard(match));
-  const boardMsgP2 = await sendTextWithKeyboard(p2, await getBoardText(p2, match), await getBoardKeyboard(match));
+  const boardMsgP1 = await sendTextWithKeyboard(p1, await getBoardText(p1, match), getBoardKeyboard(match));
+  const boardMsgP2 = await sendTextWithKeyboard(p2, await getBoardText(p2, match), getBoardKeyboard(match));
   match.msgIds[p1] = boardMsgP1;
   match.msgIds[p2] = boardMsgP2;
   await kv.set(["matches", matchId], match);
@@ -430,6 +457,7 @@ async function handleMove(cb: any, match: Match) {
   const row = parseInt(rowStr);
   const col = parseInt(colStr);
   const index = row * 3 + col;
+  const now = Date.now();
 
   if (!match.active) {
     await answerCallback(cb.id, "Match ended");
@@ -437,6 +465,12 @@ async function handleMove(cb: any, match: Match) {
   }
   if (userId !== match.turn) {
     await answerCallback(cb.id, "Not your turn");
+    return;
+  }
+  if (now - match.lastMoveTime > 300000) { // 5 minutes timeout
+    const opponent = userId === match.p1 ? match.p2 : match.p1;
+    await answerCallback(cb.id, "Timeout! You forfeited the match.");
+    await endMatch(match, opponent); // Pass winner
     return;
   }
   if (match.board[index] !== "") {
@@ -447,6 +481,7 @@ async function handleMove(cb: any, match: Match) {
   match.board[index] = userId === match.p1 ? "X" : "O";
   const opponent = userId === match.p1 ? match.p2 : match.p1;
   match.turn = opponent;
+  match.lastMoveTime = now;
 
   const winnerMark = checkWin(match.board);
   const tie = !winnerMark && match.board.every((c) => c !== "");
@@ -471,6 +506,7 @@ async function handleMove(cb: any, match: Match) {
       match.rounds++;
       match.board = Array(9).fill("");
       match.turn = match.rounds % 2 === 1 ? match.p1 : match.p2; // Alternate starter
+      match.lastMoveTime = now;
       await kv.set(["matches", match.id], match);
       await editText(match.p1, match.msgIds[match.p1], await getBoardText(match.p1, match), getBoardKeyboard(match));
       await editText(match.p2, match.msgIds[match.p2], await getBoardText(match.p2, match), getBoardKeyboard(match));
@@ -496,7 +532,7 @@ function checkWin(board: string[]): string | null {
 }
 
 // Function to end a match and update profiles/stats
-async function endMatch(match: Match) {
+async function endMatch(match: Match, forfeitWinner?: number) {
   match.active = false;
   await kv.set(["matches", match.id], match);
   await kv.delete(["active_matches", match.p1]);
@@ -507,21 +543,32 @@ async function endMatch(match: Match) {
   p1Profile.matchesPlayed++;
   p2Profile.matchesPlayed++;
 
-  const p1Wins = match.wins[match.p1];
-  const p2Wins = match.wins[match.p2];
-  let winnerId: number | null = null;
+  let winnerId: number | null = forfeitWinner || null;
   let statusKeyP1 = "tieMatch";
   let statusKeyP2 = "tieMatch";
-  if (p1Wins > p2Wins) {
-    winnerId = match.p1;
-    statusKeyP1 = "youWinMatch";
-    statusKeyP2 = "youLoseMatch";
-    p1Profile.wins++;
-  } else if (p2Wins > p1Wins) {
-    winnerId = match.p2;
-    statusKeyP1 = "youLoseMatch";
-    statusKeyP2 = "youWinMatch";
-    p2Profile.wins++;
+  if (!forfeitWinner) {
+    const p1Wins = match.wins[match.p1];
+    const p2Wins = match.wins[match.p2];
+    if (p1Wins > p2Wins) {
+      winnerId = match.p1;
+      statusKeyP1 = "youWinMatch";
+      statusKeyP2 = "youLoseMatch";
+      p1Profile.wins++;
+      p2Profile.losses++;
+    } else if (p2Wins > p1Wins) {
+      winnerId = match.p2;
+      statusKeyP1 = "youLoseMatch";
+      statusKeyP2 = "youWinMatch";
+      p2Profile.wins++;
+      p1Profile.losses++;
+    }
+  } else {
+    const winnerProfile = forfeitWinner === match.p1 ? p1Profile : p2Profile;
+    const loserProfile = forfeitWinner === match.p1 ? p2Profile : p1Profile;
+    winnerProfile.wins++;
+    loserProfile.losses++;
+    statusKeyP1 = forfeitWinner === match.p1 ? "youWinMatch" : "youLoseMatch";
+    statusKeyP2 = forfeitWinner === match.p2 ? "youWinMatch" : "youLoseMatch";
   }
 
   if (winnerId) {
@@ -533,19 +580,18 @@ async function endMatch(match: Match) {
       if (loserProfile.trophies < 0) loserProfile.trophies = 0;
     } else {
       winnerProfile.stars += 1.5;
-      // Total stars distributed += 0.5
-      let stats = await kv.get<{ totalStarsDistributed: number, totalMatches: number }>(["stats"]);
-      if (!stats.value) stats.value = { totalStarsDistributed: 0, totalMatches: 0 };
-      stats.value.totalStarsDistributed += 0.5;
-      await kv.set(["stats"], stats.value);
+      let statsRes = await kv.get<Stats>(["stats"]);
+      let stats = statsRes.value || { totalMatches: 0, totalStarsDistributed: 0, totalStarsPurchased: 0 };
+      stats.totalStarsDistributed += 0.5;
+      await kv.set(["stats"], stats);
     }
   }
 
   // Update total matches
-  let stats = await kv.get<{ totalStarsDistributed: number, totalMatches: number }>(["stats"]);
-  if (!stats.value) stats.value = { totalStarsDistributed: 0, totalMatches: 0 };
-  stats.value.totalMatches += 1;
-  await kv.set(["stats"], stats.value);
+  let statsRes = await kv.get<Stats>(["stats"]);
+  let stats = statsRes.value || { totalMatches: 0, totalStarsDistributed: 0, totalStarsPurchased: 0 };
+  stats.totalMatches += 1;
+  await kv.set(["stats"], stats);
 
   await saveUserProfile(p1Profile);
   await saveUserProfile(p2Profile);
@@ -567,7 +613,7 @@ async function createInvoice(chatId: number, userId: number, amount: number) {
       description: `Top up ${amount} stars`,
       payload,
       currency: "XTR",
-      prices: [{ label: "Stars", amount }],
+      prices: [{ label: "Stars", amount: amount * 100 }], // Assuming XTR units
     }),
   });
 }
@@ -580,6 +626,7 @@ async function sendProfile(chatId: number, profile: UserProfile) {
     stars: profile.stars,
     matches: profile.matchesPlayed,
     wins: profile.wins,
+    losses: profile.losses,
   });
   await sendText(chatId, text);
 }
@@ -601,49 +648,41 @@ async function sendLeaderboard(chatId: number, lang: Lang, type: "trophies" | "s
 
 // --- DAILY BONUS ---
 // Handler for daily bonus claim
-async function handleDaily(userId: number, lang: Lang) {
+async function handleDaily(userId: number, lang: Lang, cbId: string) {
   const profile = await getUserProfile(userId);
   const now = Date.now();
   if (now - profile.lastDailyBonus < 24 * 3600 * 1000) {
-    await answerCallback("", getText(lang, "dailyNotReady"));
+    await answerCallback(cbId, getText(lang, "dailyNotReady"));
     return;
   }
-  profile.stars += 1;
   profile.lastDailyBonus = now;
+  const isStar = Math.random() < 0.5;
+  if (isStar) {
+    profile.stars += 1;
+    await answerCallback(cbId, getText(lang, "dailyClaimedStar"));
+  } else {
+    profile.trophies += 1;
+    await answerCallback(cbId, getText(lang, "dailyClaimedTrophy"));
+  }
   await saveUserProfile(profile);
-  await answerCallback("", getText(lang, "dailyClaimed"));
 }
 
 // --- WITHDRAWAL LOGIC ---
 // Handler for star withdrawal
-async function handleWithdraw(userId: number, lang: Lang) {
+async function handleWithdraw(userId: number, lang: Lang, cbId: string) {
   const profile = await getUserProfile(userId);
   if (profile.stars < 50) {
-    await answerCallback("", getText(lang, "withdrawalMin"));
+    await answerCallback(cbId, getText(lang, "withdrawalMin"));
     return;
   }
   const existing = await kv.get<Withdrawal>(["withdrawals", userId]);
   if (existing.value && !existing.value.completed) {
-    await answerCallback("", getText(lang, "withdrawalPending"));
+    await answerCallback(cbId, getText(lang, "withdrawalPending"));
     return;
   }
-  const withdrawal: Withdrawal = {
-    userId,
-    amount: profile.stars, // Withdraw all if >=50
-    timestamp: Date.now(),
-    completed: false,
-  };
-  await kv.set(["withdrawals", userId], withdrawal);
-
-  const adminIdRes = await kv.get<number>(["admin_id"]);
-  if (adminIdRes.value) {
-    const kb = {
-      inline_keyboard: [[{ text: getText("en", "completeWithdraw"), callback_data: `complete_withdraw:${userId}` }]],
-    };
-    await sendTextWithKeyboard(adminIdRes.value, getText("en", "withdrawalRequest", { username: profile.username, amount: withdrawal.amount }), kb);
-  }
-
-  await answerCallback("", getText(lang, "withdrawalSuccess"));
+  await sendText(userId, getText(lang, "enterWithdrawAmount", { stars: profile.stars }));
+  await setState(userId, "withdraw_amount");
+  await answerCallback(cbId);
 }
 
 // --- ADMIN LOGIC ---
@@ -666,6 +705,7 @@ async function sendAdminMenu(chatId: number, lang: Lang) {
     [{ text: getText(lang, "adminModifyBalances"), callback_data: "admin_modify" }],
     [{ text: getText(lang, "adminStats"), callback_data: "admin_stats" }],
     [{ text: getText(lang, "adminWithdrawals"), callback_data: "admin_pending" }],
+    [{ text: getText(lang, "adminPayments"), callback_data: "admin_payments" }],
   ];
   await sendTextWithKeyboard(chatId, getText(lang, "adminMenu"), { inline_keyboard: kb });
 }
@@ -679,31 +719,31 @@ async function handleAdminStats(chatId: number, lang: Lang) {
     totalUsers++;
     if ((entry.value as UserProfile).lastActive > now - 24 * 3600 * 1000) activeUsers++;
   }
-  const stats = await kv.get<{ totalMatches: number; totalStarsDistributed: number }>(["stats"]) || { value: { totalMatches: 0, totalStarsDistributed: 0 } };
+  const statsRes = await kv.get<Stats>(["stats"]);
+  const stats = statsRes.value || { totalMatches: 0, totalStarsDistributed: 0, totalStarsPurchased: 0 };
   const text = getText(lang, "statsText", {
     users: totalUsers,
     active: activeUsers,
-    matches: stats.value.totalMatches,
-    stars: stats.value.totalStarsDistributed,
+    matches: stats.totalMatches,
+    stars: stats.totalStarsDistributed,
+    purchased: stats.totalStarsPurchased,
   });
   await sendText(chatId, text);
 }
 
 // Handler for admin pending withdrawals
 async function handleAdminPending(chatId: number, lang: Lang) {
-  let text = getText(lang, "pendingWithdrawals");
   let hasPending = false;
   for await (const entry of kv.list({ prefix: ["withdrawals"] })) {
     const w = entry.value as Withdrawal;
     if (!w.completed) {
       hasPending = true;
       const profile = await getUserProfile(w.userId);
-      text += `@${profile.username} - ${w.amount} stars\n`;
+      const text = getText(lang, "withdrawalRequest", { username: profile.username, amount: w.amount });
       const kb = {
         inline_keyboard: [[{ text: getText(lang, "completeWithdraw"), callback_data: `complete_withdraw:${w.userId}` }]],
       };
       await sendTextWithKeyboard(chatId, text, kb);
-      text = ""; // Reset for next
     }
   }
   if (!hasPending) {
@@ -711,13 +751,30 @@ async function handleAdminPending(chatId: number, lang: Lang) {
   }
 }
 
+// Handler for admin payment history
+async function handleAdminPayments(chatId: number, lang: Lang) {
+  const payments: Payment[] = [];
+  for await (const entry of kv.list({ prefix: ["payments"] })) {
+    payments.push(entry.value as Payment);
+  }
+  payments.sort((a, b) => b.timestamp - a.timestamp);
+  let text = "📜 Recent Payments:\n";
+  for (let i = 0; i < Math.min(10, payments.length); i++) {
+    const p = payments[i];
+    const profile = await getUserProfile(p.userId);
+    text += `@${profile.username || profile.firstName} purchased ${p.amount} stars on ${new Date(p.timestamp).toLocaleString()}\n`;
+  }
+  if (payments.length === 0) text = "No payments yet.";
+  await sendText(chatId, text);
+}
+
 // Function to complete a withdrawal
-async function completeWithdrawal(userId: number) {
+async function completeWithdrawal(userId: number, cbId: string) {
   const withdrawalRes = await kv.get<Withdrawal>(["withdrawals", userId]);
   if (!withdrawalRes.value || withdrawalRes.value.completed) return;
   const profile = await getUserProfile(userId);
   if (profile.stars < withdrawalRes.value.amount) {
-    await answerCallback("", getText("en", "withdrawalInsufficient"));
+    await answerCallback(cbId, getText("en", "withdrawalInsufficient"));
     return;
   }
   profile.stars -= withdrawalRes.value.amount;
@@ -726,7 +783,7 @@ async function completeWithdrawal(userId: number) {
   withdrawal.completed = true;
   await kv.set(["withdrawals", userId], withdrawal);
   await sendText(userId, getText(profile.language || "en", "withdrawalCompleted", { amount: withdrawal.amount }));
-  await answerCallback("", "Completed");
+  await answerCallback(cbId, "Completed");
 }
 
 // --- MAIN UPDATE HANDLER ---
@@ -750,10 +807,35 @@ async function handleUpdate(update: any) {
       const amount = parseInt(text);
       if (Number.isInteger(amount) && amount >= 1) {
         await createInvoice(chatId, user.id, amount);
+        await setState(user.id, null);
       } else {
         await sendText(chatId, getText(profile.language || "en", "invalidAmount"));
       }
-      await setState(user.id, null);
+      return;
+    }
+
+    if (state === "withdraw_amount") {
+      const amount = Number(text);
+      if (!isNaN(amount) && amount >= 50 && amount <= profile.stars) {
+        const withdrawal: Withdrawal = {
+          userId: user.id,
+          amount,
+          timestamp: Date.now(),
+          completed: false,
+        };
+        await kv.set(["withdrawals", user.id], withdrawal);
+        const adminIdRes = await kv.get<number>(["admin_id"]);
+        if (adminIdRes.value) {
+          const kb = {
+            inline_keyboard: [[{ text: getText("en", "completeWithdraw"), callback_data: `complete_withdraw:${user.id}` }]],
+          };
+          await sendTextWithKeyboard(adminIdRes.value, getText("en", "withdrawalRequest", { username: profile.username, amount }), kb);
+        }
+        await sendText(chatId, getText(profile.language || "en", "withdrawalSuccess"));
+        await setState(user.id, null);
+      } else {
+        await sendText(chatId, getText(profile.language || "en", "invalidWithdrawAmount"));
+      }
       return;
     }
 
@@ -848,11 +930,9 @@ async function handleUpdate(update: any) {
     if (!profile.language) return;
 
     if (data === "play_trophy") {
-      await handleJoinQueue(user.id, lang, "trophy");
-      await answerCallback(cb.id, "Joined trophy queue");
+      await handleJoinQueue(user.id, lang, "trophy", cb.id);
     } else if (data === "play_star") {
-      await handleJoinQueue(user.id, lang, "star");
-      await answerCallback(cb.id, "Joined star queue");
+      await handleJoinQueue(user.id, lang, "star", cb.id);
     } else if (data === "profile") {
       await sendProfile(chatId, profile);
       await answerCallback(cb.id);
@@ -863,13 +943,13 @@ async function handleUpdate(update: any) {
       await sendLeaderboard(chatId, lang, "stars");
       await answerCallback(cb.id);
     } else if (data === "withdraw") {
-      await handleWithdraw(user.id, lang);
+      await handleWithdraw(user.id, lang, cb.id);
     } else if (data === "topup") {
       await sendText(chatId, getText(lang, "enterAmount"));
       await setState(user.id, "topup_amount");
       await answerCallback(cb.id);
     } else if (data === "daily") {
-      await handleDaily(user.id, lang);
+      await handleDaily(user.id, lang, cb.id);
     } else if (data === "admin") {
       if (profile.username !== ADMIN_USERNAME) {
         await sendText(chatId, getText(lang, "accessDenied"));
@@ -911,11 +991,13 @@ async function handleUpdate(update: any) {
     } else if (data === "admin_pending") {
       await handleAdminPending(chatId, lang);
       await answerCallback(cb.id);
+    } else if (data === "admin_payments") {
+      await handleAdminPayments(chatId, lang);
+      await answerCallback(cb.id);
     } else if (data.startsWith("complete_withdraw:")) {
       if (profile.username !== ADMIN_USERNAME) return;
       const targetId = parseInt(data.split(":")[1]);
-      await completeWithdrawal(targetId);
-      await answerCallback(cb.id);
+      await completeWithdrawal(targetId, cb.id);
     } else if (data.startsWith("move:")) {
       const matchRes = await kv.get<Match>(["matches", data.split(":")[1]]);
       if (matchRes.value) {
@@ -940,6 +1022,20 @@ async function handleUpdate(update: any) {
     const profile = await getUserProfile(payload.userId);
     profile.stars += payload.amount;
     await saveUserProfile(profile);
+
+    const paymentRecord: Payment = {
+      id: crypto.randomUUID(),
+      userId: payload.userId,
+      amount: payload.amount,
+      timestamp: Date.now(),
+    };
+    await kv.set(["payments", paymentRecord.id], paymentRecord);
+
+    let statsRes = await kv.get<Stats>(["stats"]);
+    let stats = statsRes.value || { totalMatches: 0, totalStarsDistributed: 0, totalStarsPurchased: 0 };
+    stats.totalStarsPurchased += payload.amount;
+    await kv.set(["stats"], stats);
+
     await sendText(update.message.chat.id, getText(profile.language || "en", "paymentSuccess") + payload.amount + getText(profile.language || "en", "starsAdded"));
   }
 }
