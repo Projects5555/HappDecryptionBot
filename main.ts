@@ -613,7 +613,7 @@ async function createInvoice(chatId: number, userId: number, amount: number) {
       description: `Top up ${amount} stars`,
       payload,
       currency: "XTR",
-      prices: [{ label: "Stars", amount: amount * 100 }], // Assuming XTR units
+      prices: [{ label: "Stars", amount: amount * 1 }], // Assuming XTR units
     }),
   });
 }
